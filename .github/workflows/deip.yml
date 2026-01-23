@@ -10,7 +10,7 @@ jobs:
   update-nodes:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # 必须有写入权限才能推送代码
 
     steps:
       - name: Checkout repository
@@ -21,17 +21,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq curl
 
-      # 新增步骤：把变量里的节点写入到 GitHub服务器 的指定位置
       - name: Create Template File
         run: |
+          # 确保目录存在
           sudo mkdir -p /etc/sing-box
+          
           # 将 Secrets 里的节点写入文件
-          echo "${{ secrets.VMESS_TEMPLATE }}" | sudo tee /etc/sing-box/url.txt
+          # 注意：这里使用引号包裹以防止变量中有特殊字符导致错误
+          echo "${{ secrets.VMESS_TEMPLATE }}" | sudo tee /etc/sing-box/url.txt > /dev/null
+          
+          echo "模板文件已创建，路径: /etc/sing-box/url.txt"
 
       - name: Run Script and Save to File
         run: |
+          # 赋予仓库内的脚本执行权限（如果你已经推送到仓库）
+          # 建议直接运行当前仓库检出的脚本，而不是去 curl 远程的（这样测试更方便）
+          chmod +x cfyx2.sh
+          
           # 运行脚本，提取 vmess 链接覆盖写入 deip.txt
-          bash <(curl -l -s https://raw.githubusercontent.com/hc990275/yx/main/cfyx.sh) | grep "^vmess://" > deip.txt
+          # 使用 ./cfyx.sh 运行当前目录下的脚本
+          ./cfyx.sh | grep "^vmess://" > deip.txt
           
           echo "生成节点数量预览:"
           wc -l deip.txt
@@ -41,6 +50,7 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
+          # 检查是否有文件变动
           if [[ -n $(git status -s) ]]; then
             git add deip.txt
             git commit -m "Auto update nodes: $(date +'%Y-%m-%d')"
