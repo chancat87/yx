@@ -2,16 +2,15 @@ name: Daily Node Update
 
 on:
   schedule:
-    # 每天北京时间 08:00 运行
-    # GitHub 使用 UTC 时间，北京时间 08:00 = UTC 00:00
+    # 北京时间每天 08:00 (UTC时间 00:00)
     - cron: '0 0 * * *'
-  workflow_dispatch: # 允许手动点击按钮运行
+  workflow_dispatch: # 允许手动运行
 
 jobs:
   update-nodes:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 赋予写入仓库的权限
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -22,23 +21,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq curl
 
+      # 新增步骤：把变量里的节点写入到 GitHub服务器 的指定位置
+      - name: Create Template File
+        run: |
+          sudo mkdir -p /etc/sing-box
+          # 将 Secrets 里的节点写入文件
+          echo "${{ secrets.VMESS_TEMPLATE }}" | sudo tee /etc/sing-box/url.txt
+
       - name: Run Script and Save to File
         run: |
-          # 运行脚本，并只提取 vmess:// 开头的行保存到 deip.txt
-          # 这样可以过滤掉脚本运行时的日志信息（如"正在安装..."等）
+          # 运行脚本，提取 vmess 链接覆盖写入 deip.txt
           bash <(curl -l -s https://raw.githubusercontent.com/hc990275/yx/main/cfyx.sh) | grep "^vmess://" > deip.txt
           
-          # 检查文件内容（可选，用于调试日志）
-          echo "Generated node count:"
+          echo "生成节点数量预览:"
           wc -l deip.txt
 
       - name: Commit and Push Changes
         run: |
-          # 配置 git 用户信息（显示为 GitHub Actions）
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # 检查是否有变动，有变动则提交
           if [[ -n $(git status -s) ]]; then
             git add deip.txt
             git commit -m "Auto update nodes: $(date +'%Y-%m-%d')"
