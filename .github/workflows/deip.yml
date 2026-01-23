@@ -1,0 +1,48 @@
+name: Daily Node Update
+
+on:
+  schedule:
+    # 每天北京时间 08:00 运行
+    # GitHub 使用 UTC 时间，北京时间 08:00 = UTC 00:00
+    - cron: '0 0 * * *'
+  workflow_dispatch: # 允许手动点击按钮运行
+
+jobs:
+  update-nodes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 赋予写入仓库的权限
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+
+      - name: Run Script and Save to File
+        run: |
+          # 运行脚本，并只提取 vmess:// 开头的行保存到 deip.txt
+          # 这样可以过滤掉脚本运行时的日志信息（如"正在安装..."等）
+          bash <(curl -l -s https://raw.githubusercontent.com/hc990275/yx/main/cfyx.sh) | grep "^vmess://" > deip.txt
+          
+          # 检查文件内容（可选，用于调试日志）
+          echo "Generated node count:"
+          wc -l deip.txt
+
+      - name: Commit and Push Changes
+        run: |
+          # 配置 git 用户信息（显示为 GitHub Actions）
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 检查是否有变动，有变动则提交
+          if [[ -n $(git status -s) ]]; then
+            git add deip.txt
+            git commit -m "Auto update nodes: $(date +'%Y-%m-%d')"
+            git push
+          else
+            echo "No changes to commit."
+          fi
