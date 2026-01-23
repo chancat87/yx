@@ -48,7 +48,7 @@ check_deps() {
 # 获取 GitHub IP (修复变量作用域问题)
 get_github_ips() {
     # --- 关键修复：URL直接定义在函数内 ---
-    local url="https://raw.githubusercontent.com/hc990275/yx/main/50哥IP.txt"
+    local url="https://raw.githubusercontent.com/hc990275/yx/main/50个IP.txt"
     # ----------------------------------
     
     echo -e "${YELLOW}正在从 GitHub 拉取优选 IP 列表...${NC}"
