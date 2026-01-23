@@ -1,90 +1,85 @@
 #!/bin/bash
 
-# ==================================================
-#   TG@sddzn 节点优选生成器 (全自动/全量版)
-# ==================================================
-
 INSTALL_PATH="/usr/local/bin/cfy"
 
-# --- 1. 安装与自更新逻辑 ---
+# --- 安装/更新逻辑 ---
 if [ "$0" != "$INSTALL_PATH" ]; then
-    echo "正在安装/更新 [TG@sddzn 节点优选生成器]..."
-    
-    # 检查 root 权限
+    echo "正在安装/更新 [cfy 节点优选生成器]..."
+
     if [ "$(id -u)" -ne 0 ]; then
-        echo "❌ 错误: 需要管理员权限。请使用 'sudo bash ...' 运行。"
+        echo "错误: 安装需要管理员权限。请使用 'curl ... | sudo bash' 或 'sudo bash <(curl ...)' 命令来运行。"
         exit 1
     fi
-
-    # 写入文件
-    if [[ "$(basename "$0")" == "bash" || "$(basename "$0")" == "sh" ]]; then
-        # 如果是 curl | bash 运行的
+    
+    # 智能判断执行模式 (管道 vs 文件)
+    if [[ "$(basename "$0")" == "bash" || "$(basename "$0")" == "sh" || "$(basename "$0")" == "-bash" ]]; then
         cat /proc/self/fd/0 > "$INSTALL_PATH"
     else
-        # 如果是本地文件运行的
         cp "$0" "$INSTALL_PATH"
     fi
 
-    chmod +x "$INSTALL_PATH"
-    echo "✅ 安装成功! 输入 'cfy' 即可直接运行。"
-    echo "---"
-    # 安装完成后立即执行新脚本
-    exec "$INSTALL_PATH"
+    if [ $? -eq 0 ]; then
+        chmod +x "$INSTALL_PATH"
+        echo "✅ 安装成功! 您现在可以随时随地运行 'cfy' 命令。"
+        echo "---"
+        echo "首次运行..."
+        exec "$INSTALL_PATH"
+    else
+        echo "❌ 安装失败, 请检查权限。"
+        exit 1
+    fi
     exit 0
 fi
 
-# --- 2. 核心程序 ---
+# --- 主程序 ---
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-# 检查必要命令
 check_deps() {
-    for cmd in jq curl base64 grep sed; do
+    for cmd in jq curl base64 grep sed mktemp shuf; do
         if ! command -v "$cmd" &> /dev/null; then
-            echo -e "${RED}❌ 错误: 缺少命令 '$cmd'。请先安装它 (apt install $cmd)。${NC}"
+            echo -e "${RED}错误: 命令 '$cmd' 未找到. 请先安装它 (apt install $cmd 或 yum install $cmd).${NC}"
             exit 1
         fi
     done
 }
 
-# 获取 GitHub IP (核心修复)
 get_github_ips() {
-    # --- 配置区域 ---
-    # 直接在此处定义 URL，确保绝对有效
+    # 这里定义 3.txt 的下载地址
+    # 如果地址有变，请修改这里
     local url="https://raw.githubusercontent.com/hc990275/yx/main/3.txt"
-    # ----------------
     
-    echo -e "${YELLOW}正在从 GitHub 拉取优选 IP 列表...${NC}"
-    echo -e "  -> 目标地址: $url"
+    echo -e "${YELLOW}正在从 GitHub 获取优选 IP 列表...${NC}"
+    echo -e "  -> 源地址: $url"
     
-    # 获取内容：
-    # 1. curl -L: 跟随重定向
-    # 2. tr -d '\r': 删除 Windows 回车符 (关键，防止格式错误)
-    # 3. sed '/^$/d': 删除空行
+    # 下载并处理：去除回车符，去除空行
     local raw_content
-    raw_content=$(curl -s -L --max-time 10 "$url" | tr -d '\r' | sed '/^$/d')
+    raw_content=$(curl -s "$url" | tr -d '\r' | sed '/^$/d')
     
     if [ -z "$raw_content" ]; then
-        echo -e "${RED}❌ 获取失败！内容为空或网络连接超时。${NC}"
-        echo -e "${RED}   请检查服务器是否能连接 raw.githubusercontent.com${NC}"
+        echo -e "${RED}错误: 无法获取 IP 列表或列表为空，请检查网络连接。${NC}"
         return 1
     fi
 
-    # 存入全局数组
+    # 将内容读入数组
     declare -g -a ip_list
     mapfile -t ip_list <<< "$raw_content"
 
-    # 再次检查数量
-    local count=${#ip_list[@]}
-    if [ "$count" -eq 0 ]; then
-        echo -e "${RED}❌ 解析失败: 未发现有效 IP。${NC}"
+    if [ ${#ip_list[@]} -eq 0 ]; then
+        echo -e "${RED}错误: 解析后未发现有效 IP。${NC}"
         return 1
     fi
 
-    echo -e "${GREEN}✅ 成功获取 $count 个 IP 地址。${NC}"
+    # 随机打乱数组，保证每次生成的节点不一样
+    local temp_file=$(mktemp)
+    for ip in "${ip_list[@]}"; do echo "$ip" >> "$temp_file"; done
+    mapfile -t ip_list < <(shuf "$temp_file")
+    rm -f "$temp_file"
+
+    echo -e "${GREEN}成功获取并随机排序 ${#ip_list[@]} 个优选 IP 地址。${NC}"
     return 0
 }
 
@@ -93,87 +88,125 @@ main() {
     declare -a valid_urls valid_ps_names
     
     echo -e "${GREEN}=================================================="
-    echo -e "      TG@sddzn 节点优选生成器 (全量版)"
+    echo -e " 节点优选生成器 (Custom For You)"
+    echo -e " 数据源: GitHub (hc990275/yx)"
     echo -e "==================================================${NC}"
+    echo ""
 
-    # --- 步骤 1: 读取本地种子节点 ---
+    # 1. 获取种子节点 (原逻辑保持不变)
     if [ -f "$url_file" ]; then
-        # 逐行读取文件
-        while IFS= read -r url || [ -n "$url" ]; do
-            # 简单校验是否以 vmess:// 开头
-            if [[ "$url" == vmess://* ]]; then
-                # 解码获取备注名，用于显示
-                decoded_json=$(echo "${url#"vmess://"}" | base64 -d 2>/dev/null)
-                if [ $? -eq 0 ] && [ -n "$decoded_json" ]; then
-                    ps=$(echo "$decoded_json" | jq -r .ps 2>/dev/null)
-                    if [ -n "$ps" ]; then 
-                        valid_urls+=("$url"); valid_ps_names+=("$ps")
-                    fi
-                fi
+        mapfile -t urls < "$url_file"
+        for url in "${urls[@]}"; do
+            decoded_json=$(echo "${url#"vmess://"}" | base64 -d 2>/dev/null)
+            if [ $? -eq 0 ] && [ -n "$decoded_json" ]; then
+                ps=$(echo "$decoded_json" | jq -r .ps 2>/dev/null)
+                if [ $? -eq 0 ] && [ -n "$ps" ]; then valid_urls+=("$url"); valid_ps_names+=("$ps"); fi
             fi
-        done < "$url_file"
+        done
     fi
 
-    # --- 步骤 2: 选择模板 (自动或手动) ---
     local selected_url
     if [ ${#valid_urls[@]} -gt 0 ]; then
         if [ ${#valid_urls[@]} -eq 1 ]; then
             selected_url=${valid_urls[0]}
-            echo -e "${YELLOW}检测到单节点，自动使用模板: ${valid_ps_names[0]}${NC}"
+            echo -e "${YELLOW}检测到只有一个有效节点, 已自动选择: ${valid_ps_names[0]}${NC}"
         else
             echo -e "${YELLOW}请选择一个节点作为模板:${NC}"
-            for i in "${!valid_ps_names[@]}"; do 
-                printf "%3d) %s\n" "$((i+1))" "${valid_ps_names[$i]}"
-            done
+            for i in "${!valid_ps_names[@]}"; do printf "%3d) %s\n" "$((i+1))" "${valid_ps_names[$i]}"; done
             local choice
             while true; do
-                read -p "请输入编号: " choice
+                read -p "请输入选项编号 (1-${#valid_urls[@]}): " choice
                 if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#valid_urls[@]} ]; then
-                    selected_url=${valid_urls[$((choice-1))]}
-                    break
-                else 
-                    echo -e "${RED}无效输入.${NC}"
-                fi
+                    selected_url=${valid_urls[$((choice-1))]}; break
+                else echo -e "${RED}无效输入.${NC}"; fi
             done
         fi
     else
-        echo -e "${YELLOW}未找到有效配置文件，请手动输入 vmess:// 链接:${NC}"
-        read selected_url
+        echo -e "${YELLOW}在 $url_file 中未找到有效节点.${NC}"
+        while true; do
+            read -p "请手动粘贴一个 vmess:// 链接: " selected_url
+            if [[ "$selected_url" != vmess://* ]]; then echo -e "${RED}格式错误.${NC}"; continue; fi
+            break
+        done
     fi
 
-    # 解码原始数据备用
+    # 解码原始节点
     local base64_part=${selected_url#"vmess://"}
     local original_json=$(echo "$base64_part" | base64 -d)
     local original_ps=$(echo "$original_json" | jq -r .ps)
+    echo -e "${GREEN}已选择模板: $original_ps${NC}"
     
-    # --- 步骤 3: 获取 IP 并生成 (全自动) ---
-    get_github_ips || exit 1
+    # 2. 选择模式
+    echo -e "${YELLOW}请选择操作模式:${NC}"
+    echo "  1) GitHub 优选库 (hc990275/yx/3.txt)"
+    echo "  2) Cloudflare 官方 IP (随机段)"
     
-    local num_to_generate=${#ip_list[@]}
+    local ip_source_choice; local use_optimized_ips=false
+    while true; do
+        read -p "请输入选项 (1-2): " ip_source_choice
+        if [[ "$ip_source_choice" == "1" ]]; then use_optimized_ips=true; break;
+        elif [[ "$ip_source_choice" == "2" ]]; then break;
+        else echo -e "${RED}无效输入.${NC}"; fi
+    done
     
+    # 3. 准备 IP 列表
+    declare -a ip_list
+    local num_to_generate=0
+
+    if $use_optimized_ips; then
+        # 获取 GitHub IP
+        get_github_ips || exit 1
+        
+        # 询问数量
+        local max_available=${#ip_list[@]}
+        while true; do
+            read -p "检测到 $max_available 个优选IP，请输入想生成的数量 (默认全部，直接回车): " input_num
+            if [ -z "$input_num" ]; then num_to_generate=$max_available; break; fi
+            if [[ "$input_num" =~ ^[0-9]+$ ]] && [ "$input_num" -gt 0 ] && [ "$input_num" -le "$max_available" ]; then
+                num_to_generate=$input_num; break;
+            else echo -e "${RED}请输入 1-$max_available 之间的数字.${NC}"; fi
+        done
+    else
+        # Cloudflare 官方逻辑 (未变动)
+        echo -e "${YELLOW}正在获取 Cloudflare 官方 IP 段...${NC}"
+        cloudflare_ips=$(curl -s https://www.cloudflare.com/ips-v4)
+        mapfile -t ip_list <<< "$cloudflare_ips"
+        while true; do
+            read -p "请输入生成数量: " num_to_generate
+            if [[ "$num_to_generate" =~ ^[0-9]+$ ]]; then break; fi
+        done
+    fi
+
+    # 4. 生成新链接
     echo "---"
-    echo -e "${YELLOW}正在为全部 $num_to_generate 个 IP 生成配置...${NC}"
+    echo -e "${YELLOW}=== 生成结果 ===${NC}"
     
-    # 循环生成
     for ((i=0; i<$num_to_generate; i++)); do
-        local current_ip=${ip_list[$i]}
+        local current_ip=""
         
-        # 构造新名字: 原名_TG@sddzn_IP
-        local new_ps="${original_ps}_TG@sddzn_${current_ip}"
-        
-        # 使用 jq 替换 add(地址) 和 ps(备注)
-        # 确保 IP 必须存在，否则 jq 可能会报错
-        if [ -n "$current_ip" ]; then
-            local modified_json=$(echo "$original_json" | jq --arg ip "$current_ip" --arg ps "$new_ps" '.add = $ip | .ps = $ps' -c)
-            
-            # Base64 编码 (tr -d '\n' 确保单行)
-            local new_base64=$(echo -n "$modified_json" | base64 | tr -d '\n')
-            echo "vmess://${new_base64}"
+        if $use_optimized_ips; then
+            # 模式1: 直接从列表中取
+            current_ip=${ip_list[$i]}
+        else
+            # 模式2: 随机生成
+            local random_range=${ip_list[$((RANDOM % ${#ip_list[@]}))]}
+            current_ip=${random_range%/*} # 简单取网段头，或者你可以自己写随机生成IP逻辑
         fi
+        
+        # 构造新名字: 原名-IP
+        # 注意: 因为是纯IP文本，没有ISP名字了，直接把IP附在后面方便区分
+        local new_ps="${original_ps}-${current_ip}"
+        
+        # 修改 JSON (替换 add 和 ps)
+        local modified_json=$(echo "$original_json" | jq --arg new_add "$current_ip" --arg new_ps "$new_ps" '.add = $new_add | .ps = $new_ps')
+        
+        # 编码并输出
+        local new_base64=$(echo -n "$modified_json" | base64 | tr -d '\n')
+        echo "vmess://${new_base64}"
     done
     
     echo "---"
-    echo -e "${GREEN}完成! 共生成 $num_to_generate 个节点。${NC}"
+    echo -e "${GREEN}生成完毕! 已生成 $num_to_generate 个链接.${NC}"
 }
 
 check_deps
