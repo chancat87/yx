@@ -1,27 +1,24 @@
 #!/bin/bash
 
 # =========================================================
-# 脚本名称: MTProto Proxy + Cloudflare Tunnel 一键管理脚本
-# 功能描述: 安装 MTG 代理，配置 Cloudflare Tunnel，支持快捷键管理
-# 系统要求: Ubuntu / Debian / CentOS (推荐 Ubuntu 20.04+)
+# 脚本名称: MTProto + Cloudflare Tunnel 深度集成脚本
+# 功能描述: 一键安装 MTG、配置隧道、支持快捷键 m 管理
 # =========================================================
 
-# --- 全局变量定义 ---
+# --- 变量与路径定义 ---
 MTG_BIN="/usr/local/bin/mtg"
 MTG_SERVICE="/etc/systemd/system/mtg.service"
-CF_BIN="/usr/local/bin/cloudflared"
+MTG_CONF="/etc/mtg_info"
 SHORTCUT_BIN="/usr/local/bin/m"
 
-# 颜色定义
+# 颜色控制
 RED='\033[31m'
 GREEN='\033[32m'
 YELLOW='\033[33m'
 BLUE='\033[36m'
 PLAIN='\033[0m'
 
-# --- 辅助函数 ---
-
-# 检查是否为 Root 用户
+# --- 基础环境检查 ---
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         echo -e "${RED}错误: 请使用 root 用户运行此脚本！${PLAIN}"
@@ -29,81 +26,61 @@ check_root() {
     fi
 }
 
-# 检查系统类型并安装依赖
-install_dependencies() {
-    echo -e "${YELLOW}正在检查并安装系统依赖...${PLAIN}"
+# --- 核心功能函数 ---
+
+# 1. 安装服务
+install_services() {
+    echo -e "${BLUE}开始环境检查与安装...${PLAIN}"
+    
+    # 安装必要组件
     if [ -f /etc/debian_version ]; then
-        apt-get update -y
-        apt-get install -y curl wget tar jq
+        apt-get update -y && apt-get install -y wget curl tar jq lsof
     elif [ -f /etc/redhat-release ]; then
-        yum install -y curl wget tar jq
+        yum install -y wget curl tar jq lsof
+    fi
+
+    echo -e "${YELLOW}--- 端口与参数自定义 ---${PLAIN}"
+    
+    # 交互输入端口
+    read -p "请输入 MTProto 监听端口 (建议非443，如 8443): " MY_PORT
+    while [[ -z "$MY_PORT" ]]; do
+        read -p "端口不能为空，请重新输入: " MY_PORT
+    done
+
+    read -p "请输入 WebSocket 端口 (用于隧道转发，如 8080): " MY_WS_PORT
+    [[ -z "$MY_WS_PORT" ]] && MY_WS_PORT=8080
+
+    read -p "请输入伪装域名 (如 google.com): " MY_DOMAIN
+    [[ -z "$MY_DOMAIN" ]] && MY_DOMAIN="google.com"
+
+    read -p "请输入你的 Cloudflare Tunnel Token: " CF_TOKEN
+    while [[ -z "$CF_TOKEN" ]]; do
+        read -p "Token 不能为空，请重新输入: " CF_TOKEN
+    done
+
+    # 下载 MTG (自动识别架构)
+    echo -e "${BLUE}正在下载并配置 MTProto 代理...${PLAIN}"
+    ARCH=$(uname -m)
+    if [[ "$ARCH" == "x86_64" ]]; then
+        BIT="amd64"
+    elif [[ "$ARCH" == "aarch64" ]]; then
+        BIT="arm64"
     else
-        echo -e "${RED}不支持的操作系统！${PLAIN}"
+        echo -e "${RED}不支持的 CPU 架构: $ARCH${PLAIN}"
         exit 1
     fi
-}
 
-# 创建快捷键 m
-create_shortcut() {
-    cp "$0" "$SHORTCUT_BIN"
-    chmod +x "$SHORTCUT_BIN"
-    echo -e "${GREEN}快捷键 'm' 创建成功！以后输入 m 即可管理服务。${PLAIN}"
-}
-
-# --- MTProto (MTG) 相关函数 ---
-
-# 获取最新版 MTG 下载链接
-get_mtg_url() {
-    # 检测架构
-    ARCH=$(uname -m)
-    case $ARCH in
-        x86_64)  FILE_ARCH="amd64" ;;
-        aarch64) FILE_ARCH="arm64" ;;
-        *)       echo -e "${RED}不支持的架构: $ARCH${PLAIN}"; return 1 ;;
-    esac
-
-    # 这里使用 9seconds/mtg 的稳定版本
-    echo "https://github.com/9seconds/mtg/releases/download/v2.1.7/mtg-linux-${FILE_ARCH}.tar.gz"
-}
-
-# 安装 MTProto
-install_mtproto() {
-    echo -e "${BLUE}=== 开始安装 MTProto 代理 ===${PLAIN}"
-    
-    # 1. 下载
-    DOWNLOAD_URL=$(get_mtg_url)
-    echo -e "正在下载 MTG: ${DOWNLOAD_URL}"
-    wget -O mtg.tar.gz "$DOWNLOAD_URL"
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}下载失败，请检查网络连接。${PLAIN}"
-        rm mtg.tar.gz
-        return
-    fi
-
-    # 2. 解压安装
+    wget -O mtg.tar.gz "https://github.com/9seconds/mtg/releases/download/v2.1.7/mtg-linux-${BIT}.tar.gz"
     mkdir -p mtg_temp
     tar -xzf mtg.tar.gz -C mtg_temp --strip-components=1
     mv mtg_temp/mtg "$MTG_BIN"
     chmod +x "$MTG_BIN"
     rm -rf mtg.tar.gz mtg_temp
-    
-    echo -e "${GREEN}MTG 二进制文件安装完毕。${PLAIN}"
-
-    # 3. 配置参数
-    echo -e "${YELLOW}请配置 MTProto 代理参数:${PLAIN}"
-    
-    read -p "请输入监听端口 (默认 443, 回车使用默认): " MTG_PORT
-    [[ -z "$MTG_PORT" ]] && MTG_PORT=443
-    
-    read -p "请输入伪装域名 (用于 TLS 伪装, 默认 google.com): " MTG_DOMAIN
-    [[ -z "$MTG_DOMAIN" ]] && MTG_DOMAIN="google.com"
 
     # 生成密钥
-    SECRET=$($MTG_BIN generate-secret --hex "$MTG_DOMAIN")
-    echo -e "${GREEN}已生成密钥: $SECRET${PLAIN}"
+    MY_SECRET=$($MTG_BIN generate-secret --hex "$MY_DOMAIN")
 
-    # 4. 创建 Systemd 服务
+    # 创建 MTG 服务文件
     cat > "$MTG_SERVICE" <<EOF
 [Unit]
 Description=MTG Proxy Service
@@ -111,7 +88,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=$MTG_BIN simple-run -b 0.0.0.0:$MTG_PORT $SECRET
+ExecStart=$MTG_BIN simple-run -b 0.0.0.0:$MY_PORT $MY_SECRET
 Restart=always
 RestartSec=3
 LimitNOFILE=65535
@@ -120,191 +97,126 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
 
-    # 5. 启动服务
-    systemctl daemon-reload
-    systemctl enable mtg
-    systemctl start mtg
-    
-    echo -e "${GREEN}MTProto 代理已启动！${PLAIN}"
-    echo -e "本地监听端口: ${MTG_PORT}"
-    echo -e "专用密钥 (Secret): ${SECRET}"
-    
-    # 保存配置信息到本地文件以便查看
-    echo "PORT=$MTG_PORT" > /etc/mtg_info
-    echo "SECRET=$SECRET" >> /etc/mtg_info
-    echo "DOMAIN=$MTG_DOMAIN" >> /etc/mtg_info
-}
-
-# --- Cloudflare Tunnel 相关函数 ---
-
-install_cloudflared() {
-    echo -e "${BLUE}=== 开始安装 Cloudflare Tunnel ===${PLAIN}"
-    
-    # 1. 获取 Token
-    echo -e "${YELLOW}请务必确保你在 Cloudflare Zero Trust 面板已经创建了 Tunnel 并获得了 Token。${PLAIN}"
-    read -p "请输入 Cloudflare Tunnel Token: " CF_TOKEN
-    
-    if [[ -z "$CF_TOKEN" ]]; then
-        echo -e "${RED}Token 不能为空！取消安装 Tunnel。${PLAIN}"
-        return
+    # 安装 Cloudflare Tunnel
+    echo -e "${BLUE}正在配置 Cloudflare Tunnel...${PLAIN}"
+    if [[ "$BIT" == "amd64" ]]; then
+        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        dpkg -i cloudflared.deb && rm cloudflared.deb
+    else
+        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb
+        dpkg -i cloudflared.deb && rm cloudflared.deb
     fi
 
-    # 2. 下载安装 Cloudflared
-    echo -e "正在下载 Cloudflared..."
-    if [ -f /etc/debian_version ]; then
-        wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-        dpkg -i cloudflared-linux-amd64.deb
-        rm cloudflared-linux-amd64.deb
-    elif [ -f /etc/redhat-release ]; then
-        wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-x86_64.rpm
-        rpm -ivh cloudflared-linux-x86_64.rpm
-        rm cloudflared-linux-x86_64.rpm
-    fi
-
-    # 3. 注册服务
+    # 注册隧道服务
     cloudflared service uninstall 2>/dev/null
     cloudflared service install "$CF_TOKEN"
-    
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}Cloudflare Tunnel 安装并注册成功！${PLAIN}"
-    else
-        echo -e "${RED}Cloudflare Tunnel 注册失败，请检查 Token 是否正确。${PLAIN}"
-    fi
-}
 
-# --- 管理功能函数 ---
-
-start_services() {
-    systemctl start mtg
-    systemctl start cloudflared
-    echo -e "${GREEN}所有服务已发送启动命令。${PLAIN}"
-}
-
-stop_services() {
-    systemctl stop mtg
-    systemctl stop cloudflared
-    echo -e "${RED}所有服务已停止。${PLAIN}"
-}
-
-restart_services() {
+    # 启动所有服务
+    systemctl daemon-reload
+    systemctl enable mtg
     systemctl restart mtg
     systemctl restart cloudflared
-    echo -e "${GREEN}所有服务已重启。${PLAIN}"
+
+    # 保存配置信息到文件
+    cat > "$MTG_CONF" <<EOF
+PORT=$MY_PORT
+WS_PORT=$MY_WS_PORT
+DOMAIN=$MY_DOMAIN
+SECRET=$MY_SECRET
+EOF
+
+    # 创建管理快捷键 m
+    cp "$0" "$SHORTCUT_BIN"
+    chmod +x "$SHORTCUT_BIN"
+
+    echo -e "${GREEN}安装成功！${PLAIN}"
+    echo -e "你可以直接输入 ${YELLOW}m${PLAIN} 来管理服务。"
+    show_info
 }
 
+# 2. 显示连接信息
+show_info() {
+    if [ ! -f "$MTG_CONF" ]; then
+        echo -e "${RED}未发现安装记录，请先执行安装。${PLAIN}"
+        return
+    fi
+    source "$MTG_CONF"
+    echo -e "\n${BLUE}========== MTProto 连接信息 ==========${PLAIN}"
+    echo -e "本地监听端口: ${GREEN}$PORT${PLAIN}"
+    echo -e "隧道转发端口: ${GREEN}$WS_PORT${PLAIN}"
+    echo -e "伪装域名: ${YELLOW}$DOMAIN${PLAIN}"
+    echo -e "代理密钥 (Secret): ${YELLOW}$SECRET${PLAIN}"
+    echo -e "-------------------------------------"
+    echo -e "MTG 进程状态: $(systemctl is-active mtg)"
+    echo -e "CF 隧道状态: $(systemctl is-active cloudflared)"
+    echo -e "-------------------------------------"
+    echo -e "${BLUE}注意: 请在 CF 网页后台将 Public Hostname 指向:${PLAIN}"
+    echo -e "${GREEN}Type: TCP | URL: localhost:$PORT${PLAIN}"
+    echo -e "=====================================\n"
+}
+
+# 3. 日志管理
 view_logs() {
-    echo -e "${YELLOW}请选择要查看的日志:${PLAIN}"
-    echo "1. MTProto 代理日志"
-    echo "2. Cloudflare Tunnel 日志"
-    read -p "请输入数字: " LOG_CHOICE
-    
-    if [[ "$LOG_CHOICE" == "1" ]]; then
-        journalctl -u mtg -f
-    elif [[ "$LOG_CHOICE" == "2" ]]; then
-        journalctl -u cloudflared -f
-    else
-        echo -e "${RED}输入错误。${PLAIN}"
-    fi
+    echo -e "1. 查看 MTProto 日志"
+    echo -e "2. 查看 Cloudflare 隧道日志"
+    read -p "请输入选择: " log_type
+    case $log_type in
+        1) journalctl -u mtg -f ;;
+        2) journalctl -u cloudflared -f ;;
+        *) echo "无效输入" ;;
+    esac
 }
 
-show_status() {
-    echo -e "${BLUE}=== 服务运行状态 ===${PLAIN}"
-    echo -n "MTProto 状态: "
-    if systemctl is-active --quiet mtg; then echo -e "${GREEN}运行中${PLAIN}"; else echo -e "${RED}未运行${PLAIN}"; fi
-    
-    echo -n "Tunnel  状态: "
-    if systemctl is-active --quiet cloudflared; then echo -e "${GREEN}运行中${PLAIN}"; else echo -e "${RED}未运行${PLAIN}"; fi
-    
-    if [ -f /etc/mtg_info ]; then
-        echo -e "\n${BLUE}=== MTProto 配置信息 ===${PLAIN}"
-        source /etc/mtg_info
-        echo -e "本地端口: $PORT"
-        echo -e "密钥 (Secret): $SECRET"
-        echo -e "伪装域名: $DOMAIN"
-        echo -e "${YELLOW}注意: 如果使用 Cloudflare Tunnel，请在 CF 后台将 Tunnel 指向 localhost:$PORT${PLAIN}"
-    fi
+# 4. 停止/启动/重启
+manage_services() {
+    local action=$1
+    systemctl $action mtg
+    systemctl $action cloudflared
+    echo -e "${GREEN}服务已执行 $action 操作${PLAIN}"
 }
 
+# 5. 卸载
 uninstall_all() {
-    read -p "确定要卸载所有服务吗？(y/n): " CONFIRM
-    if [[ "$CONFIRM" == "y" ]]; then
-        systemctl stop mtg
-        systemctl disable mtg
-        rm "$MTG_BIN"
-        rm "$MTG_SERVICE"
-        rm /etc/mtg_info
-        
+    read -p "确定要彻底删除所有相关组件吗？(y/n): " confirm
+    if [[ "$confirm" == "y" ]]; then
+        systemctl stop mtg cloudflared
+        systemctl disable mtg cloudflared
+        rm -f "$MTG_BIN" "$MTG_SERVICE" "$MTG_CONF" "$SHORTCUT_BIN"
         cloudflared service uninstall
-        apt-get remove -y cloudflared 2>/dev/null
-        yum remove -y cloudflared 2>/dev/null
-        
-        echo -e "${GREEN}所有服务已卸载。${PLAIN}"
-    else
-        echo -e "操作取消。"
+        echo -e "${GREEN}卸载完成。${PLAIN}"
     fi
 }
 
 # --- 主菜单 ---
-
-menu() {
+main_menu() {
     clear
     echo -e "${BLUE}=========================================${PLAIN}"
-    echo -e "${BLUE}    MTProto + Cloudflare Tunnel 管理脚本   ${PLAIN}"
+    echo -e "${BLUE}    MTProto + Cloudflare Tunnel 管理    ${PLAIN}"
     echo -e "${BLUE}=========================================${PLAIN}"
-    echo -e "1. 安装所有服务 (MTProto + Tunnel)"
-    echo -e "2. 单独修改/重装 Cloudflare Token"
-    echo -e "3. 启动所有服务"
-    echo -e "4. 停止所有服务"
-    echo -e "5. 重启所有服务"
-    echo -e "6. 查看服务状态 & 连接信息"
-    echo -e "7. 查看日志"
-    echo -e "8. 卸载所有服务"
-    echo -e "0. 退出脚本"
+    echo -e "1. ${GREEN}安装${PLAIN} 所有服务"
+    echo -e "2. ${YELLOW}启动${PLAIN} 所有服务"
+    echo -e "3. ${RED}停止${PLAIN} 所有服务"
+    echo -e "4. ${BLUE}重启${PLAIN} 所有服务"
+    echo -e "5. 查看 ${GREEN}状态与连接信息${PLAIN}"
+    echo -e "6. 查看 ${YELLOW}实时日志${PLAIN}"
+    echo -e "7. ${RED}卸载${PLAIN} 脚本与服务"
+    echo -e "0. 退出"
     echo -e "${BLUE}=========================================${PLAIN}"
-    read -p "请输入数字 [0-8]: " choice
+    read -p "请输入数字 [0-7]: " num
 
-    case $choice in
-        1)
-            install_dependencies
-            install_mtproto
-            install_cloudflared
-            create_shortcut
-            show_status
-            ;;
-        2)
-            install_cloudflared
-            ;;
-        3)
-            start_services
-            ;;
-        4)
-            stop_services
-            ;;
-        5)
-            restart_services
-            ;;
-        6)
-            show_status
-            ;;
-        7)
-            view_logs
-            ;;
-        8)
-            uninstall_all
-            ;;
-        0)
-            exit 0
-            ;;
-        *)
-            echo -e "${RED}无效输入，请重新输入。${PLAIN}"
-            sleep 1
-            menu
-            ;;
+    case "$num" in
+        1) install_services ;;
+        2) manage_services "start" ;;
+        3) manage_services "stop" ;;
+        4) manage_services "restart" ;;
+        5) show_info ;;
+        6) view_logs ;;
+        7) uninstall_all ;;
+        0) exit 0 ;;
+        *) echo -e "${RED}输入错误！${PLAIN}"; sleep 1; main_menu ;;
     esac
 }
 
-# --- 脚本入口 ---
-
+# 脚本入口
 check_root
-# 如果有参数传入 (例如快捷键调用)，这里可以处理，目前默认直接进菜单
-menu
+main_menu
