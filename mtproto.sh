@@ -2,15 +2,15 @@
 
 # =========================================================
 # 脚本名称: MTProto + Cloudflare Tunnel 旗舰版
-# 脚本版本: v1.0.2
-# 更新说明: 修复 Secret 读取失败问题，增强配置持久化，增加版本号显示
+# 脚本版本: v1.0.3
+# 更新说明: 修复 GitHub 404 下载链接失效问题，增加安装校验逻辑
 # =========================================================
 
 MTG_BIN="/usr/local/bin/mtg"
 MTG_SERVICE="/etc/systemd/system/mtg.service"
 MTG_CONF="/etc/mtg_info"
 SHORTCUT_BIN="/usr/local/bin/m"
-VERSION="v1.0.2"
+VERSION="v1.0.3"
 
 # 颜色
 RED='\033[31m'
@@ -37,18 +37,44 @@ install_services() {
     [[ -z "$MY_DOMAIN" ]] && MY_DOMAIN="google.com"
     read -p "3. 请输入 Cloudflare Tunnel Token: " CF_TOKEN
     
-    # 下载 MTG
+    # 下载 MTG (修复 404 逻辑)
     ARCH=$(uname -m)
-    [[ "$ARCH" == "x86_64" ]] && BIT="amd64" || BIT="arm64"
-    wget -O mtg.tar.gz "https://github.com/9seconds/mtg/releases/download/v2.1.7/mtg-linux-${BIT}.tar.gz"
-    tar -xzf mtg.tar.gz && mv mtg-*/mtg "$MTG_BIN" && chmod +x "$MTG_BIN"
+    if [[ "$ARCH" == "x86_64" ]]; then
+        BIT="linux-amd64"
+    elif [[ "$ARCH" == "aarch64" ]]; then
+        BIT="linux-arm64"
+    else
+        echo -e "${RED}不支持的架构: $ARCH${PLAIN}" && exit 1
+    fi
+
+    echo -e "${BLUE}正在从 GitHub 获取最新版 MTG...${PLAIN}"
+    # 动态获取最新版本号
+    NEW_VER=$(curl -s https://api.github.com/repos/9seconds/mtg/releases/latest | jq -r .tag_name | sed 's/v//')
+    # 构造新的下载链接格式
+    DOWNLOAD_URL="https://github.com/9seconds/mtg/releases/download/v${NEW_VER}/mtg-${NEW_VER}-${BIT}.tar.gz"
+    
+    wget -O mtg.tar.gz "$DOWNLOAD_URL"
+    if [[ $? -ne 0 || ! -s mtg.tar.gz ]]; then
+        echo -e "${RED}下载 MTG 失败，请检查网络或 GitHub 链接是否变动。${PLAIN}"
+        exit 1
+    fi
+
+    tar -xzf mtg.tar.gz
+    # 兼容解压后的不同目录名
+    mv mtg-*/mtg "$MTG_BIN" 2>/dev/null || mv mtg "$MTG_BIN" 2>/dev/null
+    chmod +x "$MTG_BIN"
     rm -rf mtg.tar.gz mtg-*
+
+    if [[ ! -f "$MTG_BIN" ]]; then
+        echo -e "${RED}MTG 二进制文件安装失败！程序中断。${PLAIN}"
+        exit 1
+    fi
 
     # 生成 Secret
     echo -e "${YELLOW}正在生成加密密钥...${PLAIN}"
     MY_SECRET=$($MTG_BIN generate-secret --hex "$MY_DOMAIN")
     
-    # 【核心修复】保存到配置文件
+    # 保存到配置文件
     cat > "$MTG_CONF" <<EOF
 PORT=$MY_PORT
 DOMAIN=$MY_DOMAIN
@@ -74,11 +100,10 @@ EOF
 
     # 安装 CF Tunnel
     echo -e "${BLUE}配置 Cloudflare 隧道...${PLAIN}"
-    if [[ "$BIT" == "amd64" ]]; then
-        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-    else
-        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb
-    fi
+    CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb"
+    [[ "$ARCH" == "aarch64" ]] && CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb"
+    
+    curl -L --output cloudflared.deb "$CF_URL"
     dpkg -i cloudflared.deb && rm cloudflared.deb
     
     cloudflared service uninstall 2>/dev/null
@@ -97,17 +122,15 @@ EOF
     show_tg_link
 }
 
-# 查看连接 (增强修复版)
+# 查看连接
 show_tg_link() {
     if [ ! -f "$MTG_CONF" ]; then
         echo -e "${RED}错误：未找到配置文件，请先执行选项 1 进行安装。${PLAIN}"
         return
     fi
     
-    # 强制重新加载配置
     source "$MTG_CONF"
     
-    # 如果 source 失败，则从服务文件尝试提取
     if [[ -z "$SECRET" ]]; then
         SECRET=$(grep -oP 'simple-run -b 0.0.0.0:\d+ \K\S+' "$MTG_SERVICE" 2>/dev/null)
     fi
@@ -125,8 +148,7 @@ show_tg_link() {
         echo -e "端口: 443"
         echo -e "密钥: ${SECRET}"
     else
-        echo -e "${RED}错误：未能提取到有效的 Secret 密钥。${PLAIN}"
-        echo -e "建议执行选项 1 重新安装。"
+        echo -e "${RED}错误：未能提取到有效的 Secret 密钥，可能是 MTG 未安装成功。${PLAIN}"
     fi
     echo -e "=======================================\n"
     read -p "按回车返回菜单..."
