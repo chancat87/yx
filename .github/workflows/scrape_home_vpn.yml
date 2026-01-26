@@ -1,0 +1,49 @@
+name: 抓取家宽 VPN 信息
+
+on:
+  workflow_dispatch:  # 允许手动触发
+  schedule:
+    - cron: '0 */4 * * *'  # 每4小时运行一次
+
+jobs:
+  scrape-home-broadband:
+    runs-on: ubuntu-latest
+    
+    # 权限设置：允许写入代码仓库
+    permissions:
+      contents: write
+      
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安装依赖
+        run: |
+          pip install requests beautifulsoup4
+
+      - name: 运行抓取脚本
+        env:
+          # 核心：从 GitHub Secrets 中读取变量注入到环境变量
+          VPN_SOURCE_URL: ${{ secrets.VPN_SOURCE_URL }}
+        run: |
+          cd 家宽
+          python scrape_vpn.py
+
+      - name: 提交并推送
+        run: |
+          git config --global user.name "GitHub Action Bot"
+          git config --global user.email "action@github.com"
+          
+          # 检查 '家宽/README.md' 是否有变化
+          if [[ -n $(git status -s 家宽/README.md) ]]; then
+            git add 家宽/README.md
+            git commit -m "自动更新: 家宽 VPN 列表 [$(date '+%Y-%m-%d %H:%M')]"
+            git push
+          else
+            echo "没有检测到数据变化，跳过提交。"
+          fi
