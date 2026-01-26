@@ -1,11 +1,23 @@
 import os
+import sys
 import requests
 from bs4 import BeautifulSoup
 import datetime
 import re
 
-# 从环境变量获取 URL，如果本地运行则使用默认值
-TARGET_URL = os.getenv('TARGET_URL', 'https://ipspeed.info/free-l2tpipsec.php')
+# -----------------------------------------------------------
+# 1. 获取环境变量 (核心修改：不从代码中读取 URL)
+# -----------------------------------------------------------
+TARGET_URL = os.getenv('VPN_SOURCE_URL')
+
+if not TARGET_URL:
+    print("❌ 错误: 未检测到 'VPN_SOURCE_URL' 环境变量。")
+    print("请在 GitHub 仓库 Settings -> Secrets and variables -> Actions 中添加 Repository secret。")
+    sys.exit(1)
+
+# -----------------------------------------------------------
+# 2. 配置部分
+# -----------------------------------------------------------
 
 # 国家名称映射 (英文 -> 简体中文)
 COUNTRY_MAP = {
@@ -38,14 +50,15 @@ def translate_country(english_name):
 
 def parse_uptime_to_minutes(uptime_str):
     """
-    将在线时间字符串 (e.g., '60 days', '0 mins', '2 hours') 转换为分钟数用于排序。
+    解析时间字符串，用于排序。
+    例如: '60 days' -> 86400, '5 mins' -> 5
     """
     uptime_str = uptime_str.lower().strip()
     
     # 提取数字
     match = re.search(r'(\d+)', uptime_str)
     if not match:
-        return float('inf') # 无法解析则放到最后
+        return float('inf') # 无法解析的放到最后
     
     value = int(match.group(1))
     
@@ -61,7 +74,7 @@ def parse_uptime_to_minutes(uptime_str):
     return value
 
 def scrape_and_generate_readme():
-    print(f"正在抓取: {TARGET_URL}")
+    print(f"🚀 开始抓取任务...")
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -72,23 +85,25 @@ def scrape_and_generate_readme():
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
     except Exception as e:
-        print(f"请求失败: {e}")
-        return
+        print(f"❌ 请求失败: {e}")
+        sys.exit(1)
 
     # 定位表格
     table = soup.find('table', class_='table table-success table-striped text-nowrap')
     if not table:
-        print("错误: 未找到目标表格。")
-        return
+        print("❌ 错误: 未找到目标表格，网页结构可能已变更。")
+        sys.exit(1)
 
     vpn_nodes = []
     
     tbody = table.find('tbody')
     rows = tbody.find_all('tr') if tbody else []
 
+    print(f"📊 发现原始数据行数: {len(rows)}")
+
     for row in rows:
         cols = row.find_all('td')
-        # 表格结构: # (th), Location (td), IP (td), Uptime (td), Ping (td)
+        # 网页结构: # (th), Location (td), IP (td), Uptime (td), Ping (td)
         if len(cols) >= 4:
             location_raw = cols[0].get_text(strip=True)
             ip_address = cols[1].get_text(strip=True)
@@ -102,19 +117,27 @@ def scrape_and_generate_readme():
                 "location": location_cn,
                 "ip": ip_address,
                 "uptime_str": uptime_str,
-                "uptime_minutes": uptime_minutes, # 用于排序
+                "uptime_minutes": uptime_minutes, # 排序键值
                 "ping": ping
             })
 
-    # 核心逻辑：按照运行时间排序（从小到大，短的在上面）
+    # -----------------------------------------------------------
+    # 3. 排序逻辑：在线时间短的在上面 (升序排序)
+    # -----------------------------------------------------------
     vpn_nodes.sort(key=lambda x: x['uptime_minutes'])
 
-    # 生成 Markdown 内容
+    # -----------------------------------------------------------
+    # 4. 生成 README.md
+    # -----------------------------------------------------------
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
+    # 注意：这里我们隐藏 URL 的具体路径，只显示域名，或者是 "Source URL"
+    # 或者如果你想在 README 里公开这个链接，可以使用 f"[{TARGET_URL}]({TARGET_URL})"
+    # 既然你在 Action 变量里隐藏了，这里我也做个脱敏处理，或者你可以选择直接显示
+    
     md_content = f"# 家宽 L2TP/IPsec VPN 列表\n\n"
-    md_content += f"> 更新时间: {current_time} (UTC+0)\n"
-    md_content += f"> 数据来源: [{TARGET_URL}]({TARGET_URL})\n\n"
+    md_content += f"> **更新时间**: {current_time} (UTC+0)\n"
+    md_content += f"> **节点数量**: {len(vpn_nodes)}\n\n"
     md_content += f"**排序规则**：按在线时间倒序（新上线的节点在最上方）。\n\n"
     
     md_content += "| 地区 | IP 地址 | 在线时间 | 延迟 (Ping) |\n"
@@ -128,14 +151,14 @@ def scrape_and_generate_readme():
 
         md_content += f"| {node['location']} | `{node['ip']}` | {uptime_display} | {node['ping']} |\n"
 
-    # 获取脚本所在目录，确保 README 生成在 '家宽' 目录下
+    # 获取脚本所在目录
     script_dir = os.path.dirname(os.path.abspath(__file__))
     readme_path = os.path.join(script_dir, 'README.md')
 
     with open(readme_path, 'w', encoding='utf-8') as f:
         f.write(md_content)
 
-    print(f"成功生成 README.md，共 {len(vpn_nodes)} 个节点。")
+    print(f"✅ 成功生成 README.md，路径: {readme_path}")
 
 if __name__ == "__main__":
     scrape_and_generate_readme()
