@@ -1,150 +1,128 @@
 #!/bin/bash
 
+# --- 颜色定义 ---
 red() { echo -e "\e[1;91m$1\033[0m"; }
 green() { echo -e "\e[1;32m$1\033[0m"; }
 yellow() { echo -e "\e[1;33m$1\033[0m"; }
 purple() { echo -e "\e[1;35m$1\033[0m"; }
+
+# --- 初始化变量 ---
 HOSTNAME=$(hostname)
 USERNAME=$(whoami | tr '[:upper:]' '[:lower:]')
 export SECRET=${SECRET:-$(echo -n "$USERNAME+$HOSTNAME" | md5sum | head -c 32)}
-WORKDIR="$HOME/mtp" && mkdir -p "$WORKDIR"
-pgrep -x mtg > /dev/null && pkill -9 mtg >/dev/null 2>&1
+WORKDIR="$HOME/mtp"
+mkdir -p "$WORKDIR"
 
-check_port () {
-  port_list=$(devil port list)
-  tcp_ports=$(echo "$port_list" | grep -c "tcp")
-  udp_ports=$(echo "$port_list" | grep -c "udp")
-
-  if [[ $tcp_ports -lt 1 ]]; then
-      red "没有可用的TCP端口,正在调整..."
-
-      if [[ $udp_ports -ge 3 ]]; then
-          udp_port_to_delete=$(echo "$port_list" | awk '/udp/ {print $1}' | head -n 1)
-          devil port del udp $udp_port_to_delete
-          green "已删除udp端口: $udp_port_to_delete"
-      fi
-
-      while true; do
-          tcp_port=$(shuf -i 10000-65535 -n 1)
-          result=$(devil port add tcp $tcp_port 2>&1)
-          if [[ $result == *"Ok"* ]]; then
-              green "已添加TCP端口: $tcp_port"
-              tcp_port1=$tcp_port
-              break
-          else
-              yellow "端口 $tcp_port 不可用，尝试其他端口..."
-          fi
-      done
-      
-  else
-      tcp_ports=$(echo "$port_list" | awk '/tcp/ {print $1}')
-      tcp_port1=$(echo "$tcp_ports" | sed -n '1p')
-  fi
-  devil binexec on >/dev/null 2>&1
-  MTP_PORT=$tcp_port1
-  green "使用 $MTP_PORT 作为TG代理端口"
+# --- 手动输入端口函数 ---
+input_port() {
+    while true; do
+        echo -n "请输入你想使用的端口号 (10000-65535): "
+        read -r USER_PORT
+        if [[ "$USER_PORT" =~ ^[0-9]+$ ]] && [ "$USER_PORT" -ge 1024 ] && [ "$USER_PORT" -le 65535 ]; then
+            MTP_PORT=$USER_PORT
+            break
+        else
+            red "错误: 请输入有效的端口号 (1024-65535)！"
+        fi
+    done
 }
 
-get_ip() {
-IP_LIST=($(devil vhost list | awk '/^[0-9]+/ {print $1}'))
-API_URL="https://status.eooce.com/api"
-IP1=""; IP2=""; IP3=""
-AVAILABLE_IPS=()
-
-for ip in "${IP_LIST[@]}"; do
-    RESPONSE=$(curl -s --max-time 2 "${API_URL}/${ip}")
-    # echo "Checking IP: $ip -> API Response: $RESPONSE"
-    if [[ -n "$RESPONSE" ]] && [[ $(echo "$RESPONSE" | jq -r '.status') == "Available" ]]; then
-        AVAILABLE_IPS+=("$ip")
-    fi
-done
-
-[[ ${#AVAILABLE_IPS[@]} -ge 1 ]] && IP1=${AVAILABLE_IPS[0]}
-[[ ${#AVAILABLE_IPS[@]} -ge 2 ]] && IP2=${AVAILABLE_IPS[1]}
-[[ ${#AVAILABLE_IPS[@]} -ge 3 ]] && IP3=${AVAILABLE_IPS[2]}
-
-if [[ -z "$IP1" ]]; then
-    red "所有IP都被墙, 请更换服务器安装"
-    exit 1
-fi
-}
-
-download_run(){
-    if [ -e "${WORKDIR}/mtg" ]; then
-        cd ${WORKDIR} && chmod +x mtg
-        nohup ./mtg run -b 0.0.0.0:$MTP_PORT $SECRET --stats-bind=127.0.0.1:$MTP_PORT >/dev/null 2>&1 &
+# --- 端口配置 (针对 Serv00/CT8) ---
+check_port_serv00() {
+    # 检查该端口是否已经在自己的端口列表中
+    if devil port list | grep -q "$MTP_PORT"; then
+        green "端口 $MTP_PORT 已在您的列表中，直接使用。"
     else
-        mtg_url="https://github.com/eooce/test/releases/download/freebsd/mtg-freebsd-amd64"
-        wget -q -O "${WORKDIR}/mtg" "$mtg_url"
+        yellow "正在尝试为您申请端口 $MTP_PORT..."
+        result=$(devil port add tcp "$MTP_PORT" 2>&1)
+        if [[ $result == *"Ok"* ]]; then
+            green "成功添加 TCP 端口: $MTP_PORT"
+        else
+            red "端口申请失败！该端口可能已被他人占用或已达到数量上限。"
+            red "错误信息: $result"
+            exit 1
+        fi
+    fi
+    devil binexec on >/dev/null 2>&1
+}
 
-        if [ -e "${WORKDIR}/mtg" ]; then
-            cd ${WORKDIR} && chmod +x mtg
-            nohup ./mtg run -b 0.0.0.0:$MTP_PORT $SECRET --stats-bind=127.0.0.1:$MTP_PORT >/dev/null 2>&1 &
-        fi        
+# --- 获取可用 IP ---
+get_ip() {
+    IP_LIST=($(devil vhost list | awk '/^[0-9]+/ {print $1}'))
+    API_URL="https://status.eooce.com/api"
+    AVAILABLE_IPS=()
+    for ip in "${IP_LIST[@]}"; do
+        RESPONSE=$(curl -s --max-time 2 "${API_URL}/${ip}")
+        if [[ -n "$RESPONSE" ]] && [[ $(echo "$RESPONSE" | jq -r '.status') == "Available" ]]; then
+            AVAILABLE_IPS+=("$ip")
+        fi
+    done
+    [[ ${#AVAILABLE_IPS[@]} -ge 1 ]] && IP1=${AVAILABLE_IPS[0]}
+    [[ ${#AVAILABLE_IPS[@]} -ge 2 ]] && IP2=${AVAILABLE_IPS[1]}
+    [[ ${#AVAILABLE_IPS[@]} -ge 3 ]] && IP3=${AVAILABLE_IPS[2]}
+}
+
+# --- 运行 mtg ---
+run_mtg() {
+    cd "$WORKDIR" || exit
+    # 自动根据系统下载二进制 (简化逻辑)
+    if [ ! -f "mtg" ]; then
+        purple "正在下载二进制文件..."
+        if [[ "$HOSTNAME" =~ serv00.com|ct8.pl ]]; then
+            wget -q -O "mtg" "https://github.com/eooce/test/releases/download/freebsd/mtg-freebsd-amd64"
+        else
+            arch_raw=$(uname -m)
+            [[ "$arch_raw" == "x86_64" ]] && arch="amd64" || arch="arm64"
+            wget -q -O "mtg" "https://$arch.ssss.nyc.mn/mtg-linux-$arch"
+        fi
+    fi
+    
+    chmod +x mtg
+    pgrep -x mtg > /dev/null && pkill -9 mtg
+    
+    # 启动
+    nohup ./mtg run -b 0.0.0.0:"$MTP_PORT" "$SECRET" --stats-bind=127.0.0.1:"$MTP_PORT" >/dev/null 2>&1 &
+    
+    if pgrep -x "mtg" > /dev/null; then
+        green "MTG 已成功启动！"
+    else
+        red "启动失败，请检查端口是否被占用或 Secret 是否正确。"
+        exit 1
     fi
 }
 
-generate_info() {
-purple "\n分享链接:\n"
-LINKS=""
-[[ -n "$IP1" ]] && LINKS+="tg://proxy?server=$IP1&port=$MTP_PORT&secret=$SECRET"
-[[ -n "$IP2" ]] && LINKS+="\n\ntg://proxy?server=$IP2&port=$MTP_PORT&secret=$SECRET"
-[[ -n "$IP3" ]] && LINKS+="\n\ntg://proxy?server=$IP3&port=$MTP_PORT&secret=$SECRET"
+# --- 生成链接 ---
+show_info() {
+    if [[ "$HOSTNAME" =~ serv00.com|ct8.pl ]]; then
+        get_ip
+        server_ip=${IP1:-$HOSTNAME}
+    else
+        server_ip=$(curl -s ip.sb)
+    fi
 
-green "$LINKS\n"
-echo -e "$LINKS" > link.txt
-
-cat > ${WORKDIR}/restart.sh <<EOF
+    purple "\n--- 您的 TG 代理链接 ---"
+    LINKS="tg://proxy?server=$server_ip&port=$MTP_PORT&secret=$SECRET"
+    green "$LINKS\n"
+    
+    # 存入文件
+    echo -e "$LINKS" > "$WORKDIR/link.txt"
+    
+    # 创建重启脚本
+    cat > "${WORKDIR}/restart.sh" <<EOF
 #!/bin/bash
-
-pkill mtg
-cd ~ && cd ${WORKDIR}
+pkill -9 mtg
+cd ${WORKDIR}
 nohup ./mtg run -b 0.0.0.0:$MTP_PORT $SECRET --stats-bind=127.0.0.1:$MTP_PORT >/dev/null 2>&1 &
 EOF
+    chmod +x "${WORKDIR}/restart.sh"
 }
 
-download_mtg(){
-cmd=$(uname -m)
-if [ "$cmd" == "x86_64" ] || [ "$cmd" == "amd64" ] ; then
-    arch="amd64"
-elif [ "$cmd" == "aarch64" ] || [ "$cmd" == "arm64" ] ; then
-    arch="arm64"    
-else
-    arch="amd64"
-fi
+# --- 主流程 ---
+input_port
 
-wget -qO "${WORKDIR}/mtg" "https://$arch.ssss.nyc.mn/mtg-linux-$arch"
-
-export PORT=${PORT:-$(shuf -i 200-1000 -n 1)}
-export MTP_PORT=$(($PORT + 1)) 
-
-if [ -e "${WORKDIR}/mtg" ]; then
-    cd ${WORKDIR} && chmod +x mtg
-    nohup ./mtg run -b 0.0.0.0:$PORT $SECRET --stats-bind=127.0.0.1:$MTP_PORT >/dev/null 2>&1 &
-fi
-}
-
-show_link(){
-    ip=$(curl -s ip.sb)
-    purple "\nTG分享链接(如获取的是ipv6,可自行将ipv6换成ipv4):\n"
-    LINKS="tg://proxy?server=$ip&port=$PORT&secret=$SECRET"
-    green "$LINKS\n"
-    echo -e "$LINKS" > $WORKDIR/link.txt
-
-    purple "\n一键卸载命令: rm -rf mtp && pkill mtg"
-}
-
-install(){
-purple "正在安装中,请稍等...\n"
 if [[ "$HOSTNAME" =~ serv00.com|ct8.pl|useruno.com ]]; then
-    check_port
-    get_ip
-    download_run
-    generate_info
-else
-    download_mtg
-    show_link
+    check_port_serv00
 fi
-}
 
-install
+run_mtg
+show_info
