@@ -1,381 +1,262 @@
 #!/bin/bash
 
-# 颜色定义
+# =========================================================
+#  VPS 多协议代理一键管理脚本 (SOCKS5 + HTTP)
+#  基于 GOST v2
+# =========================================================
+
+# 定义颜色
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+YELLOW='\033[0;33m'
+SKYBLUE='\033[0;36m'
+PLAIN='\033[0m'
 
-# 打印彩色消息
-print_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
+# 检查是否为 Root 用户
+if [[ $EUID -ne 0 ]]; then
+    echo -e "${RED}错误：请使用 root 用户运行此脚本！${PLAIN}"
+    exit 1
+fi
 
-print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
+# 基础变量
+SERVICE_NAME="gost"
+CONFIG_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+GOST_PATH="/usr/bin/gost"
 
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
+# ---------------------------------------------------------
+#  辅助函数
+# ---------------------------------------------------------
 
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-# 检查是否为root用户
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        print_error "此脚本需要以root权限运行"
-        print_info "请使用: sudo bash $0"
-        exit 1
-    fi
+# 暂停并返回主菜单
+function wait_and_return() {
+    echo -e ""
+    read -n 1 -s -r -p "按任意键回到主菜单..."
+    show_menu
 }
 
-# 检查系统并安装依赖
-install_dependencies() {
-    print_info "检测系统并安装必要依赖..."
-    
-    if command -v apt &> /dev/null; then
-        # Debian/Ubuntu
-        apt update -y
-        apt install -y wget curl net-tools ufw build-essential
-    elif command -v yum &> /dev/null; then
-        # CentOS/RHEL
-        yum install -y wget curl net-tools
-    elif command -v dnf &> /dev/null; then
-        # Fedora
-        dnf install -y wget curl net-tools
-    else
-        print_warning "无法识别的包管理器，请手动安装依赖"
-        return 1
-    fi
-    
-    print_success "依赖安装完成"
-    return 0
-}
-
-# 检查端口是否被占用
-check_port() {
-    local port=$1
-    if netstat -tuln | grep ":$port " > /dev/null; then
-        print_error "端口 $port 已被占用"
-        return 1
-    fi
-    return 0
-}
-
-# 安装SOCKS5代理 (使用Dante)
-install_socks5() {
-    local port=$1
-    
-    print_info "开始安装SOCKS5代理 (端口: $port)..."
-    
-    if command -v apt &> /dev/null; then
-        apt install -y dante-server
-    elif command -v yum &> /dev/null; then
-        yum install -y dante-server
-    else
-        print_error "不支持的包管理器"
-        return 1
-    fi
-    
-    # 配置Dante
-    cat > /etc/danted.conf << EOF
-logoutput: /var/log/danted.log
-internal: 0.0.0.0 port = $port
-external: eth0
-method: username none
-user.privileged: root
-user.unprivileged: nobody
-client pass {
-    from: 0.0.0.0/0 to: 0.0.0.0/0
-    log: connect disconnect
-}
-pass {
-    from: 0.0.0.0/0 to: 0.0.0.0/0
-    command: bind connect udpassociate
-    log: connect disconnect
-}
-pass {
-    from: 0.0.0.0/0 to: 0.0.0.0/0
-    command: bindreply udpreply
-    log: connect disconnect
-}
-EOF
-    
-    # 创建日志文件
-    touch /var/log/danted.log
-    chown nobody:nogroup /var/log/danted.log
-    
-    # 启动服务
-    systemctl restart danted
-    systemctl enable danted
-    
-    if systemctl is-active --quiet danted; then
-        print_success "SOCKS5代理安装完成，运行在端口: $port"
-        return 0
-    else
-        print_error "SOCKS5代理启动失败"
-        return 1
-    fi
-}
-
-# 安装HTTP代理 (使用TinyProxy)
-install_http_proxy() {
-    local port=$1
-    
-    print_info "开始安装HTTP代理 (端口: $port)..."
-    
-    if command -v apt &> /dev/null; then
-        apt install -y tinyproxy
-    elif command -v yum &> /dev/null; then
-        yum install -y tinyproxy
-    else
-        print_error "不支持的包管理器"
-        return 1
-    fi
-    
-    # 备份原配置
-    cp /etc/tinyproxy/tinyproxy.conf /etc/tinyproxy/tinyproxy.conf.backup
-    
-    # 生成新配置
-    cat > /etc/tinyproxy/tinyproxy.conf << EOF
-User tinyproxy
-Group tinyproxy
-Port $port
-Timeout 600
-DefaultErrorFile "/usr/share/tinyproxy/default.html"
-StatFile "/usr/share/tinyproxy/stats.html"
-Logfile "/var/log/tinyproxy/tinyproxy.log"
-LogLevel Info
-PidFile "/run/tinyproxy/tinyproxy.pid"
-MaxClients 100
-MinSpareServers 5
-MaxSpareServers 20
-StartServers 10
-MaxRequestsPerChild 0
-Allow 0.0.0.0/0
-ViaProxyName "tinyproxy"
-ConnectPort 443
-ConnectPort 563
-EOF
-    
-    # 重启服务
-    systemctl restart tinyproxy
-    systemctl enable tinyproxy
-    
-    if systemctl is-active --quiet tinyproxy; then
-        print_success "HTTP代理安装完成，运行在端口: $port"
-        return 0
-    else
-        print_error "HTTP代理启动失败"
-        return 1
-    fi
-}
-
-# 安装多功能代理 (使用Gost)
-install_gost() {
-    local socks_port=$1
-    local http_port=$2
-    
-    print_info "开始安装Gost多功能代理..."
-    
-    # 下载Gost
+# 检查系统架构并下载对应版本的 GOST
+function download_gost() {
+    echo -e "${GREEN}正在检测系统架构...${PLAIN}"
     ARCH=$(uname -m)
-    if [ "$ARCH" = "x86_64" ]; then
-        ARCH="amd64"
-    elif [ "$ARCH" = "aarch64" ]; then
-        ARCH="arm64"
+    VERSION="2.11.5" # 使用稳定版本
+    
+    case $ARCH in
+        x86_64)
+            URL="https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost-linux-amd64-${VERSION}.gz"
+            FILENAME="gost-linux-amd64-${VERSION}.gz"
+            ;;
+        aarch64)
+            URL="https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost-linux-arm64-${VERSION}.gz"
+            FILENAME="gost-linux-arm64-${VERSION}.gz"
+            ;;
+        *)
+            echo -e "${RED}不支持的架构: ${ARCH}${PLAIN}"
+            return 1
+            ;;
+    esac
+
+    echo -e "${GREEN}正在下载 GOST (${ARCH})...${PLAIN}"
+    wget -O "$FILENAME" "$URL"
+    
+    if [[ $? -ne 0 ]]; then
+        echo -e "${RED}下载失败，请检查网络连接。${PLAIN}"
+        return 1
     fi
+
+    echo -e "${GREEN}正在安装...${PLAIN}"
+    gzip -d "$FILENAME"
+    chmod +x "gost-linux-${ARCH}-${VERSION}"
+    mv "gost-linux-${ARCH}-${VERSION}" "$GOST_PATH"
     
-    GOST_VERSION="3.0.0-rc8"
-    GOST_URL="https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/gost-linux-${ARCH}-${GOST_VERSION}.gz"
+    echo -e "${GREEN}GOST 安装完成！${PLAIN}"
+}
+
+# ---------------------------------------------------------
+#  核心功能函数
+# ---------------------------------------------------------
+
+# 1. 安装代理
+function install_proxy() {
+    echo -e "${SKYBLUE}>>> 开始安装代理服务${PLAIN}"
     
-    wget -O gost.gz $GOST_URL
-    gunzip gost.gz
-    chmod +x gost
-    mv gost /usr/local/bin/
-    
-    # 创建配置文件
-    cat > /etc/gost.yaml << EOF
-services:
-- name: service-socks5
-  addr: :$socks_port
-  handler:
-    type: socks5
-  listener:
-    type: tcp
-- name: service-http
-  addr: :$http_port
-  handler:
-    type: http
-  listener:
-    type: tcp
-EOF
-    
-    # 创建systemd服务
-    cat > /etc/systemd/system/gost.service << EOF
+    # 检查是否已安装
+    if [[ -f "$GOST_PATH" ]]; then
+        echo -e "${YELLOW}检测到 GOST 已安装，跳过下载步骤。${PLAIN}"
+    else
+        download_gost
+        if [[ $? -ne 0 ]]; then wait_and_return; return; fi
+    fi
+
+    # 获取配置信息
+    echo -e ""
+    read -p "请输入代理端口 (默认 1080): " PORT
+    [[ -z "$PORT" ]] && PORT="1080"
+
+    echo -e ""
+    read -p "请输入用户名 (留空则无密码): " USER
+    read -p "请输入密码 (留空则无密码): " PASS
+
+    # 构建启动参数
+    if [[ -z "$USER" || -z "$PASS" ]]; then
+        EXEC_CMD="$GOST_PATH -L :$PORT"
+        AUTH_INFO="无认证"
+    else
+        EXEC_CMD="$GOST_PATH -L ${USER}:${PASS}@:$PORT"
+        AUTH_INFO="${USER}:${PASS}"
+    fi
+
+    # 创建 Systemd 服务文件
+    cat > "$CONFIG_FILE" <<EOF
 [Unit]
-Description=GO Simple Tunnel
+Description=GOST Proxy Service
 After=network.target
 
 [Service]
 Type=simple
-User=root
-ExecStart=/usr/local/bin/gost -C /etc/gost.yaml
+ExecStart=$EXEC_CMD
 Restart=always
-RestartSec=10
+User=root
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    
+
     # 启动服务
     systemctl daemon-reload
-    systemctl start gost
-    systemctl enable gost
-    
-    if systemctl is-active --quiet gost; then
-        print_success "Gost安装完成"
-        print_info "SOCKS5代理端口: $socks_port"
-        print_info "HTTP代理端口: $http_port"
-        return 0
-    else
-        print_error "Gost启动失败"
-        return 1
-    fi
-}
+    systemctl enable "$SERVICE_NAME"
+    systemctl start "$SERVICE_NAME"
 
-# 配置防火墙
-configure_firewall() {
-    local socks_port=$1
-    local http_port=$2
-    
-    print_info "配置防火墙..."
-    
-    # 检查UFW是否安装
-    if command -v ufw &> /dev/null; then
-        ufw allow $socks_port/tcp
-        ufw allow $http_port/tcp
-        ufw reload
-        print_success "防火墙规则已添加"
-    elif command -v firewall-cmd &> /dev/null; then
-        # CentOS Firewalld
-        firewall-cmd --permanent --add-port=$socks_port/tcp
-        firewall-cmd --permanent --add-port=$http_port/tcp
+    # 开放防火墙端口 (尝试适配 ufw 和 firewalld)
+    if command -v ufw >/dev/null 2>&1; then
+        ufw allow "$PORT"/tcp
+        ufw allow "$PORT"/udp
+    elif command -v firewall-cmd >/dev/null 2>&1; then
+        firewall-cmd --zone=public --add-port="$PORT"/tcp --permanent
+        firewall-cmd --zone=public --add-port="$PORT"/udp --permanent
         firewall-cmd --reload
-        print_success "防火墙规则已添加"
-    else
-        print_warning "未找到UFW或Firewalld，请手动配置防火墙"
     fi
+
+    echo -e ""
+    echo -e "${GREEN}====================================${PLAIN}"
+    echo -e "${GREEN}  代理安装并启动成功！${PLAIN}"
+    echo -e "${GREEN}====================================${PLAIN}"
+    echo -e " 协议类型 : ${SKYBLUE}HTTP 和 SOCKS5 (同端口)${PLAIN}"
+    echo -e " 端口     : ${SKYBLUE}${PORT}${PLAIN}"
+    echo -e " 认证信息 : ${SKYBLUE}${AUTH_INFO}${PLAIN}"
+    echo -e "${GREEN}====================================${PLAIN}"
+    
+    wait_and_return
 }
 
-# 显示使用信息
-show_usage() {
-    local socks_port=$1
-    local http_port=$2
+# 2. 卸载代理
+function uninstall_proxy() {
+    echo -e "${YELLOW}正在停止并移除服务...${PLAIN}"
+    systemctl stop "$SERVICE_NAME"
+    systemctl disable "$SERVICE_NAME"
+    rm -f "$CONFIG_FILE"
+    systemctl daemon-reload
     
-    clear
-    echo "=============================================="
-    echo "        代理服务器安装完成"
-    echo "=============================================="
-    echo ""
-    echo "${GREEN}代理服务器信息:${NC}"
-    echo "服务器IP: $(curl -s ifconfig.me)"
-    echo "SOCKS5代理端口: $socks_port"
-    echo "HTTP代理端口: $http_port"
-    echo ""
-    echo "${YELLOW}Telegram设置方法:${NC}"
-    echo "1. Telegram设置 → 数据和存储 → 代理设置"
-    echo "2. 添加代理 → 选择类型 (SOCKS5 或 HTTP)"
-    echo "3. 填写信息:"
-    echo "   - 服务器: 你的VPS IP"
-    echo "   - 端口: $socks_port (SOCKS5) 或 $http_port (HTTP)"
-    echo "4. 点击保存并启用"
-    echo ""
-    echo "${BLUE}测试命令:${NC}"
-    echo "测试SOCKS5: curl --socks5 127.0.0.1:$socks_port http://ifconfig.me"
-    echo "测试HTTP: curl --proxy http://127.0.0.1:$http_port http://ifconfig.me"
-    echo ""
-    echo "防火墙已开放端口: $socks_port/tcp, $http_port/tcp"
-    echo "=============================================="
+    echo -e "${YELLOW}正在删除程序文件...${PLAIN}"
+    rm -f "$GOST_PATH"
+    
+    echo -e "${GREEN}卸载完成。${PLAIN}"
+    wait_and_return
 }
 
-# 主函数
-main() {
+# 3. 启动服务
+function start_proxy() {
+    systemctl start "$SERVICE_NAME"
+    echo -e "${GREEN}服务已启动。${PLAIN}"
+    wait_and_return
+}
+
+# 4. 停止服务
+function stop_proxy() {
+    systemctl stop "$SERVICE_NAME"
+    echo -e "${YELLOW}服务已停止。${PLAIN}"
+    wait_and_return
+}
+
+# 5. 重启服务
+function restart_proxy() {
+    systemctl restart "$SERVICE_NAME"
+    echo -e "${GREEN}服务已重启。${PLAIN}"
+    wait_and_return
+}
+
+# 6. 查看连接数
+function view_connections() {
+    echo -e "${SKYBLUE}>>> 正在检查代理连接数${PLAIN}"
+    
+    # 获取当前运行的端口
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo -e "${RED}服务未安装。${PLAIN}"
+        wait_and_return
+        return
+    fi
+    
+    # 从服务文件中提取端口号
+    CURRENT_PORT=$(grep "ExecStart" "$CONFIG_FILE" | grep -oE ":[0-9]+" | tail -1 | tr -d ':')
+    
+    if [[ -z "$CURRENT_PORT" ]]; then
+        echo -e "${RED}无法获取端口信息，请确认服务是否正常运行。${PLAIN}"
+    else
+        echo -e "当前监听端口: ${GREEN}${CURRENT_PORT}${PLAIN}"
+        echo -e "---------------------------------"
+        
+        # 使用 netstat 或 ss 统计连接
+        if command -v netstat >/dev/null 2>&1; then
+            CONN_COUNT=$(netstat -anp | grep ":${CURRENT_PORT} " | grep ESTABLISHED | wc -l)
+        else
+            CONN_COUNT=$(ss -anp | grep ":${CURRENT_PORT} " | grep ESTAB | wc -l)
+        fi
+        
+        echo -e "当前活跃连接数 (ESTABLISHED): ${GREEN}${CONN_COUNT}${PLAIN}"
+    fi
+    
+    wait_and_return
+}
+
+# 7. 查看服务状态
+function check_status() {
+    systemctl status "$SERVICE_NAME" --no-pager
+    wait_and_return
+}
+
+# ---------------------------------------------------------
+#  主菜单
+# ---------------------------------------------------------
+function show_menu() {
     clear
-    echo "=============================================="
-    echo "     SOCKS5 & HTTP 代理服务器一键安装脚本"
-    echo "=============================================="
-    echo ""
+    echo -e "${SKYBLUE}====================================${PLAIN}"
+    echo -e "${SKYBLUE}    VPS 代理一键管理脚本 (GOST)     ${PLAIN}"
+    echo -e "${SKYBLUE}====================================${PLAIN}"
+    echo -e "${GREEN}1.${PLAIN} 安装/重装代理 (HTTP+SOCKS5)"
+    echo -e "${GREEN}2.${PLAIN} 卸载代理"
+    echo -e "------------------------------------"
+    echo -e "${GREEN}3.${PLAIN} 启动服务"
+    echo -e "${GREEN}4.${PLAIN} 停止服务"
+    echo -e "${GREEN}5.${PLAIN} 重启服务"
+    echo -e "------------------------------------"
+    echo -e "${GREEN}6.${PLAIN} 查看连接数 (监控)"
+    echo -e "${GREEN}7.${PLAIN} 查看运行状态 (Systemd)"
+    echo -e "------------------------------------"
+    echo -e "${GREEN}0.${PLAIN} 退出脚本"
+    echo -e ""
     
-    # 检查root权限
-    check_root
-    
-    # 安装依赖
-    install_dependencies
-    
-    # 获取端口输入
-    echo ""
-    print_info "请输入代理端口 (默认使用1080和8080):"
-    
-    read -p "SOCKS5代理端口 [1080]: " SOCKS_PORT
-    SOCKS_PORT=${SOCKS_PORT:-1080}
-    
-    read -p "HTTP代理端口 [8080]: " HTTP_PORT
-    HTTP_PORT=${HTTP_PORT:-8080}
-    
-    # 检查端口
-    check_port $SOCKS_PORT || {
-        read -p "端口 $SOCKS_PORT 被占用，是否继续？ (y/N): " choice
-        if [[ ! $choice =~ ^[Yy]$ ]]; then
-            exit 1
-        fi
-    }
-    
-    check_port $HTTP_PORT || {
-        read -p "端口 $HTTP_PORT 被占用，是否继续？ (y/N): " choice
-        if [[ ! $choice =~ ^[Yy]$ ]]; then
-            exit 1
-        fi
-    }
-    
-    echo ""
-    print_info "请选择安装类型:"
-    echo "1) 安装Gost (同时支持SOCKS5和HTTP，推荐)"
-    echo "2) 分别安装Dante(SOCKS5)和TinyProxy(HTTP)"
-    echo "3) 只安装SOCKS5代理"
-    echo "4) 只安装HTTP代理"
-    read -p "请选择 [1-4]: " choice
-    
+    read -p "请输入数字 [0-7]: " choice
     case $choice in
-        1)
-            install_gost $SOCKS_PORT $HTTP_PORT
-            ;;
-        2)
-            install_socks5 $SOCKS_PORT
-            install_http_proxy $HTTP_PORT
-            ;;
-        3)
-            install_socks5 $SOCKS_PORT
-            ;;
-        4)
-            install_http_proxy $HTTP_PORT
-            ;;
-        *)
-            print_error "无效选择，退出"
-            exit 1
-            ;;
+        1) install_proxy ;;
+        2) uninstall_proxy ;;
+        3) start_proxy ;;
+        4) stop_proxy ;;
+        5) restart_proxy ;;
+        6) view_connections ;;
+        7) check_status ;;
+        0) exit 0 ;;
+        *) echo -e "${RED}输入无效，请重新输入！${PLAIN}"; sleep 1; show_menu ;;
     esac
-    
-    # 配置防火墙
-    configure_firewall $SOCKS_PORT $HTTP_PORT
-    
-    # 显示使用信息
-    show_usage $SOCKS_PORT $HTTP_PORT
 }
 
-# 运行主函数
-main "$@"
+# 启动脚本时直接进入菜单
+show_menu
