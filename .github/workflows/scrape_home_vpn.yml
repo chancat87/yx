@@ -1,93 +1,141 @@
-name: 抓取家宽 VPN (持久化+倒序+严选)
+name: 抓取家宽 VPN (持久化+倒序+Python版)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/5 * * * *'  # 每5分钟运行一次
 
 jobs:
-  scrape-persist-reverse:
+  scrape-persist-python:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write  # 必须有写入权限
       
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 安装工具
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y lynx
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-      - name: 抓取、过滤并合并数据
+      - name: 安装依赖
+        run: pip install requests beautifulsoup4
+
+      - name: 生成并运行处理脚本
         env:
           VPN_SOURCE_URL: ${{ secrets.VPN_SOURCE_URL }}
         run: |
-          mkdir -p 家宽
-          cd 家宽
-          
           # =======================================================
-          # 第一步：获取最新数据 (New Data)
+          # 在此处动态生成 Python 脚本，无需仓库里有 py 文件
           # =======================================================
-          echo "1. 正在抓取新数据..."
-          # 使用 lynx 转换为文本，保留整行信息
-          lynx -dump -width=300 "$VPN_SOURCE_URL" > raw_latest.txt
+          cat <<'EOF' > run_scraper.py
+          import os
+          import re
+          import requests
+          from bs4 import BeautifulSoup
+          import datetime
 
-          # 提取包含有效 IP 的行，并进行严格过滤
-          # 1. grep: 提取包含数字开头的行 (假设IP在行首)
-          # 2. awk: 严格排除 $1 (第一列IP) 以 "219." 开头的行
-          #    同时给每一行加上表格竖线 "| ... |"
-          grep -E "^[0-9]{1,3}\.[0-9]{1,3}\." raw_latest.txt | \
-          awk '$1 !~ /^219\./ {print "| " $0 " |"}' > new_entries.txt
-          
-          echo "本次抓取到的非219数据量: $(wc -l < new_entries.txt)"
+          URL = os.environ.get("VPN_SOURCE_URL")
+          FILE_NAME = "家宽/非219IP.md"
 
-          # =======================================================
-          # 第二步：读取旧数据 (Old Data)
-          # =======================================================
-          echo "2. 读取历史数据..."
-          touch 非219IP.md # 确保文件存在
-          
-          # 从现有的 md 文件中提取数据行 (排除表头和空行)
-          # grep "^| [0-9]" 表示只取以 "| 数字" 开头的表格行
-          grep "^| [0-9]" 非219IP.md > history_entries.txt || true
+          def get_new_data():
+              """抓取网页并提取非219开头的行"""
+              headers = {"User-Agent": "Mozilla/5.0"}
+              try:
+                  print(f"正在抓取: {URL}")
+                  resp = requests.get(URL, headers=headers, timeout=30)
+                  resp.encoding = resp.apparent_encoding # 防止乱码
+                  
+                  # 使用 BeautifulSoup 获取纯文本行，保留排版
+                  soup = BeautifulSoup(resp.text, 'html.parser')
+                  # 获取网页上的所有文本内容，按行分割
+                  text_lines = soup.get_text(separator="\n").splitlines()
+                  
+                  valid_lines = []
+                  # 正则匹配 IP 地址: x.x.x.x
+                  ip_pattern = re.compile(r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b')
 
-          # =======================================================
-          # 第三步：合并、去重、倒序 (Merge & Sort)
-          # =======================================================
-          echo "3. 合并新旧数据并倒序排列..."
-          
-          # 逻辑：将【新数据】放在【旧数据】前面，然后去重
-          # 这样最新抓到的会排在最上面 (时间倒序效果)
-          cat new_entries.txt history_entries.txt > combined.txt
-          
-          # awk 去重：!seen[$0]++ 确保完全相同的行只保留第一次出现的
-          # 因为新数据在上面，所以重复时保留的是新数据的位置（还是在上面）
-          awk '!seen[$0]++' combined.txt > final_list.txt
+                  for line in text_lines:
+                      line = line.strip()
+                      match = ip_pattern.search(line)
+                      if match:
+                          ip = match.group(1)
+                          # --- 核心规则：排除 219 开头的 IP ---
+                          if not ip.startswith("219."):
+                              # 简单的清洗：去掉可能存在的 Markdown 表格符，防止重复
+                              clean_line = line.replace("|", "").strip()
+                              if clean_line:
+                                  # 重新格式化为表格行
+                                  valid_lines.append(f"| {clean_line} |")
+                  return valid_lines
+              except Exception as e:
+                  print(f"抓取失败: {e}")
+                  return []
 
-          # 如果你指的是 "IP数值倒序" (9.x.x.x 排在 1.x.x.x 前面)，
-          # 请取消下面这行注释 (目前默认是按"发现时间"倒序，新的在最前)
-          # sort -r -V final_list.txt -o final_list.txt
+          def load_old_data():
+              """读取现有的 MD 文件中的数据行"""
+              if not os.path.exists(FILE_NAME):
+                  return []
+              
+              old_lines = []
+              with open(FILE_NAME, "r", encoding="utf-8") as f:
+                  for line in f:
+                      line = line.strip()
+                      # 只读取以 "| 数字" 开头的行，忽略表头和空行
+                      if line.startswith("|") and re.search(r'\|\s*\d', line):
+                          old_lines.append(line)
+              return old_lines
 
-          # =======================================================
-          # 第四步：写入文件
-          # =======================================================
-          echo "4. 生成最终文件..."
+          def main():
+              # 1. 确保目录存在
+              os.makedirs("家宽", exist_ok=True)
+
+              # 2. 获取数据
+              new_data = get_new_data()
+              old_data = load_old_data()
+              
+              print(f"新抓取数据: {len(new_data)} 条")
+              print(f"历史数据: {len(old_data)} 条")
+
+              if not new_data:
+                  print("本次未抓取到有效数据，结束。")
+                  return
+
+              # 3. 合并与去重 (核心逻辑)
+              # 顺序：新数据在前 + 旧数据在后
+              combined_data = new_data + old_data
+              
+              seen = set()
+              unique_data = []
+              for item in combined_data:
+                  # 以行内容作为去重依据
+                  if item not in seen:
+                      seen.add(item)
+                      unique_data.append(item)
+              
+              print(f"合并去重后总数据: {len(unique_data)} 条")
+
+              # 4. 写入文件
+              timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+              
+              with open(FILE_NAME, "w", encoding="utf-8") as f:
+                  f.write(f"# 非 219 IP 永久记录库\n\n")
+                  f.write(f"> 最后更新: {timestamp} | 总数: {len(unique_data)}\n\n")
+                  f.write(f"| IP / 端口 / 地区信息 |\n")
+                  f.write(f"| :--- |\n")
+                  for line in unique_data:
+                      f.write(f"{line}\n")
+              
+              print("文件更新成功！")
+
+          if __name__ == "__main__":
+              main()
+          EOF
           
-          # 写入表头
-          echo "# 非 219 IP 永久记录库" > 非219IP.md
-          echo "" >> 非219IP.md
-          echo "> 最后更新: $(date '+%Y-%m-%d %H:%M:%S') | 累计数量: $(wc -l < final_list.txt)" >> 非219IP.md
-          echo "" >> 非219IP.md
-          echo "| IP / 端口 / 地区信息 |" >> 非219IP.md
-          echo "| :--- |" >> 非219IP.md
-          
-          # 写入处理好的数据列表
-          cat final_list.txt >> 非219IP.md
-          
-          # 清理临时文件
-          rm raw_latest.txt new_entries.txt history_entries.txt combined.txt final_list.txt
+          # 运行刚刚生成的脚本
+          python run_scraper.py
 
       - name: 提交并推送
         run: |
@@ -96,8 +144,8 @@ jobs:
           
           if [[ -n $(git status -s) ]]; then
             git add .
-            git commit -m "更新: 非219 IP库 (持久化累加) [$(date '+%H:%M')]"
+            git commit -m "自动更新: 非219 IP库 (Python持久化) [$(date '+%H:%M')]"
             git push
           else
-            echo "没有新数据加入，跳过提交。"
+            echo "无数据变更，跳过提交。"
           fi
