@@ -10,19 +10,18 @@ jobs:
 
     steps:
       - name: Setup Go Environment
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5  # 升级 action 版本
         with:
-          go-version: '1.21'
+          go-version: '1.25'       # 升级 Go 版本解决报错
+          check-latest: true
 
       # 1. 自动下载并转换图标 (WebP -> ICO)
       - name: Download and Convert Icon
         run: |
-          # 下载 WebP 图片 (使用 Raw URL)
           $iconUrl = "https://raw.githubusercontent.com/hc990275/yx/main/%E5%AE%B6%E5%AE%BD/home_icon-icons.com_73532.webp"
           Invoke-WebRequest -Uri $iconUrl -OutFile "icon.webp"
           
-          # 使用 ImageMagick 将 WebP 转换为标准的 Windows ICO 文件
-          # auto-resize 会自动生成不同尺寸的图标以适配 Windows 显示
+          # 转换图标
           magick icon.webp -define icon:auto-resize=256,128,64,48,32,16 icon.ico
           
           Write-Host "图标已转换完成"
@@ -87,10 +86,12 @@ jobs:
             err := runCommand(cmdConnect)
 
             if err == nil {
-              openURL("https://github.com/hc990275")
-              openURL("https://ping0.cc/")
-              openURL("https://ping0.cc/")
+              // --- 成功：打开网页 (已添加新网址) ---
               openURL("https://www.youtube.com/watch?v=5USuekk16e0")
+              openURL("https://github.com/hc990275")
+              openURL("https://ping0.co/")
+              openURL("https://ping0.cc/")
+              
               msgBox("成功", "VPN 已连接", 0x40)
             } else {
               msgBox("失败", "连接失败，请重试。", 0x10)
@@ -160,10 +161,9 @@ jobs:
       # 4. 生成资源文件并混淆编译
       - name: Build EXE
         run: |
-          # 将转换好的 icon.ico 打包进资源文件
           rsrc -ico icon.ico -o rsrc.syso
           
-          # 使用 garble 进行混淆编译，去除黑框 (-H windowsgui)
+          # 混淆编译
           garble -tiny -literals -seed=random build -ldflags="-w -s -H windowsgui" -o VPN_Connect.exe main.go
 
       # 5. 上传结果供下载
