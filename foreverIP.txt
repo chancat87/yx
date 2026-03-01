@@ -12,3 +12,13 @@
 172.66.0.0
 172.67.0.0
 162.159.0.0
+blog.cloudflare.com
+developers.cloudflare.com
+radar.cloudflare.com
+one.dash.cloudflare.com
+workers.cloudflare.com
+pages.cloudflare.com
+www.web.com
+wto.org
+www.visa.com.sg
+ip.sb
