@@ -8,8 +8,8 @@ on:
 
 env:
   # === 用户自定义配置区 ===
-  TARGET_REGIONS: "SG,HK,US,JP"      # 目标地区，用英文逗号分隔
-  PER_REGION_COUNT: "50"             # 每个地区选取的节点数量
+  TARGET_REGIONS: "SG,HK,US,JP,TW"   # 目标地区，新增了 TW
+  PER_REGION_COUNT: "30"             # 每个地区选取的节点数量改为 30
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  
   # ======================
 
