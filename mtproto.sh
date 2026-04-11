@@ -180,7 +180,7 @@ modify_port() {
         RAW_CONFIG=$(echo "$CMD_LINE" | sed -n 's/.*socks5:\/\///p')
     else
         CMD_LINE=$(grep "command_args" "$SERVICE_FILE")
-        RAW_CONFIG=$(echo "$CMD_LINE" | sed -n 's/.*-L socks5:\/\///p' | tr -d '"')
+        RAW_CONFIG=$(echo "$CMD_LINE" | sed 's/#.*//' | sed -n 's/.*-L socks5:\/\///p' | tr -d '"' | tr -d ' ')
     fi
     
     # 解析旧的认证信息
@@ -249,7 +249,7 @@ EOF
 
 description="GOST SOCKS5 Proxy Service"
 command="/usr/bin/gost"
-command_args="${CMD#$GOST_PATH }" # 移除路径部分，只保留参数
+command_args="${CMD#$GOST_PATH }"
 pidfile="/run/gost.pid"
 command_background=true
 
@@ -341,7 +341,7 @@ view_dashboard() {
         RAW_CONFIG=$(echo "$CMD_LINE" | sed -n 's/.*socks5:\/\///p')
     else
         CMD_LINE=$(grep "command_args" "$SERVICE_FILE")
-        RAW_CONFIG=$(echo "$CMD_LINE" | sed -n 's/.*-L socks5:\/\///p' | tr -d '"')
+        RAW_CONFIG=$(echo "$CMD_LINE" | sed 's/#.*//' | sed -n 's/.*-L socks5:\/\///p' | tr -d '"' | tr -d ' ')
     fi
 
     if [[ "$RAW_CONFIG" == *"@"* ]]; then
