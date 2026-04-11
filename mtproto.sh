@@ -17,13 +17,24 @@ PLAIN='\033[0m'
 # 核心路径与服务名
 GOST_PATH="/usr/bin/gost"
 SERVICE_NAME="gost"
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 GOST_VERSION="2.11.5"
 
-# --- 辅助函数 ---
+# 系统检测
+detect_os_and_init() {
+    if [[ -f /etc/alpine-release ]]; then
+        OS_TYPE="alpine"
+        INIT_TYPE="openrc"
+        SERVICE_FILE="/etc/init.d/${SERVICE_NAME}"
+    else
+        OS_TYPE="debian" # 默认为类 Debian/Ubuntu 系列
+        INIT_TYPE="systemd"
+        SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+    fi
+}
 
 # 检查是否为 Root 用户
 check_root() {
+    detect_os_and_init # 在此处进行检测
     if [[ $EUID -ne 0 ]]; then
         echo -e "${RED}错误：请使用 root 用户运行此脚本！${PLAIN}"
         exit 1
@@ -50,7 +61,10 @@ install_dependencies() {
     # 仅在安装时检查，加快其他操作速度
     if [[ "$1" == "check" ]]; then
         echo -e "${YELLOW}>>> 正在检查并更新必要依赖...${PLAIN}"
-        if command -v apt-get >/dev/null 2>&1; then
+        if command -v apk >/dev/null 2>&1; then
+            apk update >/dev/null 2>&1
+            apk add wget gzip curl net-tools bash >/dev/null 2>&1
+        elif command -v apt-get >/dev/null 2>&1; then
             apt-get update -y >/dev/null 2>&1
             apt-get install -y wget gzip curl net-tools >/dev/null 2>&1
         elif command -v yum >/dev/null 2>&1; then
@@ -96,7 +110,11 @@ install_proxy() {
     # 下载文件
     DOWNLOAD_URL="https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/gost-linux-${GOST_ARCH}-${GOST_VERSION}.gz"
     
-    systemctl stop $SERVICE_NAME >/dev/null 2>&1
+    if [[ "$INIT_TYPE" == "systemd" ]]; then
+        systemctl stop $SERVICE_NAME >/dev/null 2>&1
+    else
+        rc-service $SERVICE_NAME stop >/dev/null 2>&1
+    fi
     rm -f "$GOST_PATH"
     
     echo -e "${GREEN}正在下载 GOST 程序...${PLAIN}"
@@ -157,8 +175,13 @@ modify_port() {
     echo -e "${SKYBLUE}>>> 修改代理端口${PLAIN}"
     
     # 读取旧配置以保留账号密码
-    CMD_LINE=$(grep "ExecStart" "$SERVICE_FILE")
-    RAW_CONFIG=$(echo "$CMD_LINE" | sed -n 's/.*socks5:\/\///p')
+    if [[ "$INIT_TYPE" == "systemd" ]]; then
+        CMD_LINE=$(grep "ExecStart" "$SERVICE_FILE")
+        RAW_CONFIG=$(echo "$CMD_LINE" | sed -n 's/.*socks5:\/\///p')
+    else
+        CMD_LINE=$(grep "command_args" "$SERVICE_FILE")
+        RAW_CONFIG=$(echo "$CMD_LINE" | sed -n 's/.*-L socks5:\/\///p' | tr -d '"')
+    fi
     
     # 解析旧的认证信息
     if [[ "$RAW_CONFIG" == *"@"* ]]; then
@@ -203,7 +226,8 @@ modify_port() {
 # 通用：写入 Service 文件
 write_service_file() {
     local CMD=$1
-    cat > "$SERVICE_FILE" <<EOF
+    if [[ "$INIT_TYPE" == "systemd" ]]; then
+        cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=GOST SOCKS5 Proxy Service
 After=network.target
@@ -218,13 +242,35 @@ LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
 EOF
+    else
+        # OpenRC (Alpine)
+        cat > "$SERVICE_FILE" <<EOF
+#!/sbin/openrc-run
+
+description="GOST SOCKS5 Proxy Service"
+command="/usr/bin/gost"
+command_args="${CMD#$GOST_PATH }" # 移除路径部分，只保留参数
+pidfile="/run/gost.pid"
+command_background=true
+
+depend() {
+    need net
+}
+EOF
+        chmod +x "$SERVICE_FILE"
+    fi
 }
 
 # 通用：重载并重启
 reload_and_restart() {
-    systemctl daemon-reload
-    systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
-    systemctl restart "$SERVICE_NAME"
+    if [[ "$INIT_TYPE" == "systemd" ]]; then
+        systemctl daemon-reload
+        systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
+        systemctl restart "$SERVICE_NAME"
+    else
+        rc-update add "$SERVICE_NAME" default >/dev/null 2>&1
+        rc-service "$SERVICE_NAME" restart
+    fi
 }
 
 # 通用：开放防火墙
@@ -246,20 +292,37 @@ open_firewall() {
 # 3. 卸载代理
 uninstall_proxy() {
     echo -e "${YELLOW}正在停止并卸载...${PLAIN}"
-    systemctl stop "$SERVICE_NAME"
-    systemctl disable "$SERVICE_NAME"
+    if [[ "$INIT_TYPE" == "systemd" ]]; then
+        systemctl stop "$SERVICE_NAME"
+        systemctl disable "$SERVICE_NAME"
+        systemctl daemon-reload
+    else
+        rc-service "$SERVICE_NAME" stop
+        rc-update del "$SERVICE_NAME" default >/dev/null 2>&1
+    fi
     rm -f "$SERVICE_FILE"
     rm -f "$GOST_PATH"
-    systemctl daemon-reload
     echo -e "${GREEN}卸载完成。${PLAIN}"
     wait_and_return
 }
 
 # 4/5/7 服务控制
-start_proxy() { systemctl start "$SERVICE_NAME"; echo -e "${GREEN}已启动${PLAIN}"; wait_and_return; }
-stop_proxy() { systemctl stop "$SERVICE_NAME"; echo -e "${YELLOW}已停止${PLAIN}"; wait_and_return; }
-restart_proxy() { systemctl restart "$SERVICE_NAME"; echo -e "${GREEN}已重启${PLAIN}"; wait_and_return; }
-check_log() { systemctl status "$SERVICE_NAME" --no-pager; wait_and_return; }
+start_proxy() { 
+    if [[ "$INIT_TYPE" == "systemd" ]]; then systemctl start "$SERVICE_NAME"; else rc-service "$SERVICE_NAME" start; fi
+    echo -e "${GREEN}已启动${PLAIN}"; wait_and_return; 
+}
+stop_proxy() { 
+    if [[ "$INIT_TYPE" == "systemd" ]]; then systemctl stop "$SERVICE_NAME"; else rc-service "$SERVICE_NAME" stop; fi
+    echo -e "${YELLOW}已停止${PLAIN}"; wait_and_return; 
+}
+restart_proxy() { 
+    if [[ "$INIT_TYPE" == "systemd" ]]; then systemctl restart "$SERVICE_NAME"; else rc-service "$SERVICE_NAME" restart; fi
+    echo -e "${GREEN}已重启${PLAIN}"; wait_and_return; 
+}
+check_log() { 
+    if [[ "$INIT_TYPE" == "systemd" ]]; then systemctl status "$SERVICE_NAME" --no-pager; else tail -n 50 /var/log/messages | grep gost; fi
+    wait_and_return; 
+}
 
 # 6. 综合面板 (监控 + 配置 + TG链接)
 view_dashboard() {
@@ -273,8 +336,13 @@ view_dashboard() {
 
     # --- 1. 获取配置信息 ---
     get_public_ip
-    CMD_LINE=$(grep "ExecStart" "$SERVICE_FILE")
-    RAW_CONFIG=$(echo "$CMD_LINE" | sed -n 's/.*socks5:\/\///p')
+    if [[ "$INIT_TYPE" == "systemd" ]]; then
+        CMD_LINE=$(grep "ExecStart" "$SERVICE_FILE")
+        RAW_CONFIG=$(echo "$CMD_LINE" | sed -n 's/.*socks5:\/\///p')
+    else
+        CMD_LINE=$(grep "command_args" "$SERVICE_FILE")
+        RAW_CONFIG=$(echo "$CMD_LINE" | sed -n 's/.*-L socks5:\/\///p' | tr -d '"')
+    fi
 
     if [[ "$RAW_CONFIG" == *"@"* ]]; then
         USER_PASS=$(echo "$RAW_CONFIG" | cut -d'@' -f1)
@@ -295,14 +363,22 @@ view_dashboard() {
     elif command -v netstat >/dev/null 2>&1; then
         CONN_COUNT=$(netstat -anp | grep ":${CONF_PORT} " | grep ESTABLISHED | wc -l)
     else
-        CONN_COUNT="N/A (缺少 net-tools)"
+        CONN_COUNT="N/A"
     fi
 
     # --- 3. 状态检测 ---
-    if systemctl is-active --quiet "$SERVICE_NAME"; then
-        STATUS_COLOR="${GREEN}运行中 (Active)${PLAIN}"
+    if [[ "$INIT_TYPE" == "systemd" ]]; then
+        if systemctl is-active --quiet "$SERVICE_NAME"; then
+            STATUS_COLOR="${GREEN}运行中 (Active)${PLAIN}"
+        else
+            STATUS_COLOR="${RED}已停止 (Stopped)${PLAIN}"
+        fi
     else
-        STATUS_COLOR="${RED}已停止 (Stopped)${PLAIN}"
+        if rc-service "$SERVICE_NAME" status | grep -q "started"; then
+            STATUS_COLOR="${GREEN}运行中 (Active)${PLAIN}"
+        else
+            STATUS_COLOR="${RED}已停止 (Stopped)${PLAIN}"
+        fi
     fi
 
     # --- 4. 统一显示 ---
