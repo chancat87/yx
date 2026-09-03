@@ -61,7 +61,7 @@ def main():
                 if region_code in region_map:
                     addr, port = content.split(":", 1)
                     region_map[region_code].append({
-                        "add": addr.strip(), 
+                        "add": addr.strip(),
                         "port": port.strip()
                     })
             except Exception:
@@ -79,21 +79,34 @@ def main():
         selected = region_map[rg][:per_region_count]
         
         for i, item in enumerate(selected):
-            # 替换IP
-            node_link = vless_template.replace(template_ip, item["add"])
-            # 替换端口（注意冒号，避免误替换）
-            node_link = node_link.replace(f":{template_port}", f":{item['port']}")
-            # 替换节点名（# 后面的部分）
-            node_link = re.sub(r'#.*$', f'#{rg}{i+1:02d}', node_link)
+            # 获取IP和端口
+            new_ip = item["add"]
+            new_port = item["port"]
+            
+            # 替换模板中的IP
+            node_link = vless_template.replace(template_ip, new_ip)
+            # 替换模板中的端口
+            node_link = node_link.replace(f":{template_port}", f":{new_port}")
+            # 替换节点名：先移除原有的 #xxx，然后添加新别名（不带#）
+            # 移除 # 及后面的所有内容
+            node_link = re.sub(r'#.*$', '', node_link)
+            # 添加新别名（不带#）
+            node_link = f"{node_link}{rg}{i+1:02d}"
             
             final_nodes.append(node_link)
+            
+            # 调试：打印前几个节点信息
+            if i < 3:
+                print(f"    [{rg}{i+1:02d}] {new_ip}:{new_port}")
     
     # 7. 写入文件
     with open(output_file, "w", encoding="utf-8") as f:
         if final_nodes:
             f.write("\n".join(final_nodes))
-            print(f"[SUCCESS] 裂变成功！共生成 {len(final_nodes)} 个VLESS节点。")
+            print(f"\n[SUCCESS] 裂变成功！共生成 {len(final_nodes)} 个VLESS节点。")
             print(f"[*] 输出文件: {output_file}")
+            if final_nodes:
+                print(f"[*] 示例节点: {final_nodes[0][:80]}...")
         else:
             print("[WARNING] 本次未匹配到任何节点。")
             print(f"[*] 文件中存在的地区代码示例: {list(all_regions_in_file)[:10]}...")
