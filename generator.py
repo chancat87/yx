@@ -23,7 +23,7 @@ def main():
         print("[FATAL] VLESS_TEMPLATE 变量缺失！请在 GitHub Secrets 中配置。")
         return
     
-    # 3. 解析模板，提取IP和端口
+    # 3. 解析模板，提取IP、端口和别名
     pattern = r'vless://[^@]+@([^:]+):(\d+)'
     match = re.search(pattern, vless_template)
     if not match:
@@ -33,7 +33,13 @@ def main():
     
     template_ip = match.group(1)
     template_port = match.group(2)
+    
+    # 提取模板中的别名（#后面的部分）
+    alias_match = re.search(r'#(.+)$', vless_template)
+    template_alias = alias_match.group(1) if alias_match else "Node"
+    
     print(f"[*] 模板IP: {template_ip}, 模板端口: {template_port}")
+    print(f"[*] 模板别名: {template_alias}")
     
     # 4. 获取并解析 IP 库
     print("[*] 正在获取远程 IP 列表...")
@@ -83,21 +89,21 @@ def main():
             new_ip = item["add"]
             new_port = item["port"]
             
+            # 生成新别名（不带#）
+            new_alias = f"{rg}{i+1:02d}"
+            
             # 替换模板中的IP
             node_link = vless_template.replace(template_ip, new_ip)
             # 替换模板中的端口
             node_link = node_link.replace(f":{template_port}", f":{new_port}")
-            # 替换节点名：先移除原有的 #xxx，然后添加新别名（不带#）
-            # 移除 # 及后面的所有内容
-            node_link = re.sub(r'#.*$', '', node_link)
-            # 添加新别名（不带#）
-            node_link = f"{node_link}{rg}{i+1:02d}"
+            # 替换别名（#后面的部分）
+            node_link = re.sub(r'#.*$', f'#{new_alias}', node_link)
             
             final_nodes.append(node_link)
             
             # 调试：打印前几个节点信息
             if i < 3:
-                print(f"    [{rg}{i+1:02d}] {new_ip}:{new_port}")
+                print(f"    [{new_alias}] {new_ip}:{new_port}")
     
     # 7. 写入文件
     with open(output_file, "w", encoding="utf-8") as f:
@@ -106,7 +112,7 @@ def main():
             print(f"\n[SUCCESS] 裂变成功！共生成 {len(final_nodes)} 个VLESS节点。")
             print(f"[*] 输出文件: {output_file}")
             if final_nodes:
-                print(f"[*] 示例节点: {final_nodes[0][:80]}...")
+                print(f"[*] 示例节点: {final_nodes[0]}")
         else:
             print("[WARNING] 本次未匹配到任何节点。")
             print(f"[*] 文件中存在的地区代码示例: {list(all_regions_in_file)[:10]}...")
